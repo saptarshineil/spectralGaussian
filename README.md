@@ -18,6 +18,11 @@ pip install tqdm scipy wandb opencv-python scikit-learn lpips
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn 
 
+mkdir thirdparty
+cd thirdparty
+git clone https://github.com/NVlabs/nvdiffrast
+cd nvdiffrast
+pip install .
 ```
 
 Note did not test this long time. I used my conda and could be some dependencies are missing. If there are dependency issues get back to me.
