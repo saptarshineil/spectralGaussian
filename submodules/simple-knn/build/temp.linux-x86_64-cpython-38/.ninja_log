@@ -1,0 +1,4 @@
+# ninja log v5
+0	6454	1716905500454635560	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/simple_knn.o	f280d7f59ff49112
+0	8444	1716905502442628375	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/ext.o	8f0acc603288f1d1
+0	28476	1716905522474555969	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/spatial.o	c2b24f67fce0623d

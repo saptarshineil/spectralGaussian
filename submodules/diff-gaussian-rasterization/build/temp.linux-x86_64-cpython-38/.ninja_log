@@ -1,0 +1,11 @@
+# ninja log v5
+0	936	1719268825691456294	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/forward.o	db4e803ded2b01fb
+0	1018	1719268825775456083	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/backward.o	764c27dea366a456
+1	4232	1719268828987448075	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/rasterizer_impl.o	e7e3d2dbea0619fe
+1	8330	1719268833083437865	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/ext.o	ff3564cd0c30aa97
+1	27104	1719268851855391100	/home/ssinha/dev/nerf_reflectance/spectral_gaussian/spectralgaussian/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/rasterize_points.o	1216987b122f3c13
+0	1040	1728396444099395414	/home/ssinha/dev/multi_modal/sg_multi_modal/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/forward.o	c0f9c81e0df78f1f
+0	1142	1728396444201394949	/home/ssinha/dev/multi_modal/sg_multi_modal/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/backward.o	3e86c709e420d54e
+0	4518	1728396447576379568	/home/ssinha/dev/multi_modal/sg_multi_modal/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/rasterizer_impl.o	5f4ee12376e634e4
+0	8965	1728396452021359330	/home/ssinha/dev/multi_modal/sg_multi_modal/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/ext.o	3c9d08a8fad792b2
+0	27867	1728396470924273517	/home/ssinha/dev/multi_modal/sg_multi_modal/submodules/diff-gaussian-rasterization/build/temp.linux-x86_64-cpython-38/rasterize_points.o	8a198efe58cd8ac9
