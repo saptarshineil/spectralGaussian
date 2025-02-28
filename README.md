@@ -11,12 +11,17 @@ Clone the repo locally
 conda create -n spectral_gaussian python=3.8 -y
 conda activate spectral_gaussian 
 
-conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
 pip install plyfile==0.8.1
 pip install tqdm scipy wandb opencv-python scikit-learn lpips
 
+export CC=/usr/bin/gcc-10
+export CXX=/usr/bin/g++-10
+
 pip install submodules/diff-gaussian-rasterization
 pip install submodules/simple-knn 
+
+pip install matplotlib imageio open3d
 
 mkdir thirdparty
 cd thirdparty
