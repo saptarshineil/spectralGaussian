@@ -29,12 +29,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res, n_spectra)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
-    num_classes = dataset.num_classes
-    print("Num classes: ",num_classes)
-    classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
-    cls_criterion = torch.nn.CrossEntropyLoss(reduction='none')
-    cls_optimizer = torch.optim.Adam(classifier.parameters(), lr=5e-4)
-    classifier.cuda()
+    
+    # TEMP: removed segmentation
+    # num_classes = dataset.num_classes
+    # print("Num classes: ",num_classes)
+    # classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
+    # cls_criterion = torch.nn.CrossEntropyLoss(reduction='none')
+    # cls_optimizer = torch.optim.Adam(classifier.parameters(), lr=5e-4)
+    # classifier.cuda()
+    
     # if checkpoint:
         # (model_params, first_iter) = torch.load(checkpoint)
         # gaussians.restore(model_params, opt)
@@ -55,6 +58,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     else:
         combine_spectra = True
         spectral_ids = list(range(0, n_spectra + 1)) if n_spectra > 0 else [0]
+   
+    # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
         iter_start.record()
         if not viewpoint_stack:
@@ -62,7 +67,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         total_loss = 0
         total_l1_loss = 0
-        for spectral_id in spectral_ids:     
+        
+        for spectral_id in spectral_ids:
+
+            # Network GUI     
             if network_gui.conn == None:
                 network_gui.try_connect()
             while network_gui.conn != None:
@@ -78,16 +86,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 except Exception as e:
                     network_gui.conn = None
 
-           
-
             # Every 1000 its we increase the levels of SH up to a maximum degree
             if iteration % 1000 == 0:
                 gaussians.oneupSHdegree()
                 # if combine_spectra:
                 #     gaussians.average_params_full_spectra()
 
+            # Update active spectrum
             gaussians.activate_spectra(spectral_id, iteration >= opt.normal_reg_from_iter)
 
+            # ---------- Loss ----------
             # Render
             if (iteration - 1) == debug_from:
                 pipe.debug = True
@@ -102,28 +110,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if "delta_normal_norm_"+str(spectral_id)in render_pkg.keys():
                     losses_extra['delta_reg_'+str(spectral_id)] = delta_normal_loss(render_pkg["delta_normal_norm_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
 
-            # Object Loss (here objects can be made per spectra)
-            gt_obj = viewpoint_cam.objects.cuda().long()
-            logits = classifier(objects)
-            loss_obj = cls_criterion(logits.unsqueeze(0), gt_obj.unsqueeze(0)).squeeze().mean()
-            loss_obj = loss_obj / torch.log(torch.tensor(num_classes))  # normalize to (0,1)
-
-            # Loss
+            # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
             Ll1 = l1_loss(image, gt_image)
             total_l1_loss = total_l1_loss + Ll1.item()
             # if iteration > 100 :
             # torchvision.utils.save_image(image, "img_"+ str(spectral_id) + ".png")
 
-            loss_obj_3d = None
-            if iteration % opt.reg3d_interval == 0:
+            # TEMP: removed segmentation
+            # 2D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
+            # gt_obj = viewpoint_cam.objects.cuda().long()
+            # logits = classifier(objects)
+            # loss_obj = cls_criterion(logits.unsqueeze(0), gt_obj.unsqueeze(0)).squeeze().mean()
+            # loss_obj = loss_obj / torch.log(torch.tensor(num_classes))  # normalize to (0,1)
+
+            # TEMP: removed segmentation
+            # 3D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
+            # loss_obj_3d = None
+            # if iteration % opt.reg3d_interval == 0:
                 # regularize at certain intervals
-                logits3d = classifier(gaussians._objects_dc[spectral_id].permute(2,0,1))
-                prob_obj3d = torch.softmax(logits3d,dim=0).squeeze().permute(1,0)
-                loss_obj_3d = loss_cls_3d(gaussians._xyz.squeeze().detach(), prob_obj3d, opt.reg3d_k, opt.reg3d_lambda_val, opt.reg3d_max_points, opt.reg3d_sample_size)
-                loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj + loss_obj_3d
-            else:
-                loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj
+                # logits3d = classifier(gaussians._objects_dc[spectral_id].permute(2,0,1))
+                # prob_obj3d = torch.softmax(logits3d,dim=0).squeeze().permute(1,0)
+                # loss_obj_3d = loss_cls_3d(gaussians._xyz.squeeze().detach(), prob_obj3d, opt.reg3d_k, opt.reg3d_lambda_val, opt.reg3d_max_points, opt.reg3d_sample_size)
+                # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj + loss_obj_3d
+            # else:
+                # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj
+            
+            # TEMP: removed segmentation
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
             for k in losses_extra.keys():
                 key = k[:k.rfind('_')]
@@ -151,7 +165,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                torch.save(classifier.state_dict(), os.path.join(scene.model_path, "point_cloud/iteration_{}_{}".format(iteration, spectral_id),'classifier.pth'))
+                # TEMP: removed segmentation
+                # torch.save(classifier.state_dict(), os.path.join(scene.model_path, "point_cloud/iteration_{}_{}".format(iteration, spectral_id),'classifier.pth'))
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -169,8 +184,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-                cls_optimizer.step()
-                cls_optimizer.zero_grad()
+                # cls_optimizer.step()
+                # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
             
             if pipe.brdf and pipe.brdf_mode=="envmap":

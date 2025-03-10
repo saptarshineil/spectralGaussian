@@ -87,32 +87,34 @@ def render_lightings(model_path, name, iteration, gaussians, sample_num, n_spect
 
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, classifier, n_spectra):
-    colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
-    gt_colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_objects_color")
-    pred_obj_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_pred")
-    makedirs(colormask_path, exist_ok=True)
-    makedirs(gt_colormask_path, exist_ok=True)
-    makedirs(pred_obj_path, exist_ok=True)
+    # TEMP: removed segmentation
+    # colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
+    # gt_colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_objects_color")
+    # pred_obj_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_pred")
+    # makedirs(colormask_path, exist_ok=True)
+    # makedirs(gt_colormask_path, exist_ok=True)
+    # makedirs(pred_obj_path, exist_ok=True)
 
     #need to later make this per spectra
-    for idx, view in enumerate(tqdm(views, desc="segmentation rendering progress")):
-            torch.cuda.synchronize()
-            results = render(view, gaussians, pipeline, background, debug=True, spectral_id=0)
-            torch.cuda.synchronize()
-            rendering_obj = results["render_object"]
+    # TEMP: removed segmentation
+    # for idx, view in enumerate(tqdm(views, desc="segmentation rendering progress")):
+    #         torch.cuda.synchronize()
+    #         results = render(view, gaussians, pipeline, background, debug=True, spectral_id=0)
+    #         torch.cuda.synchronize()
+    #         rendering_obj = results["render_object"]
             
-            logits = classifier(rendering_obj)
-            pred_obj = torch.argmax(logits,dim=0)
-            pred_obj_mask = visualize_obj(pred_obj.cpu().numpy().astype(np.uint8))
+    #         logits = classifier(rendering_obj)
+    #         pred_obj = torch.argmax(logits,dim=0)
+    #         pred_obj_mask = visualize_obj(pred_obj.cpu().numpy().astype(np.uint8))
             
 
-            gt_objects = view.objects
-            gt_rgb_mask = visualize_obj(gt_objects.cpu().numpy().astype(np.uint8))
+    #         gt_objects = view.objects
+    #         gt_rgb_mask = visualize_obj(gt_objects.cpu().numpy().astype(np.uint8))
 
-            rgb_mask = feature_to_rgb(rendering_obj)
-            Image.fromarray(rgb_mask).save(os.path.join(colormask_path, '{0:05d}'.format(idx) + ".png"))
-            Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
-            Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
+    #         rgb_mask = feature_to_rgb(rendering_obj)
+    #         Image.fromarray(rgb_mask).save(os.path.join(colormask_path, '{0:05d}'.format(idx) + ".png"))
+    #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
+    #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
     for spectral_id in list(range(0, n_spectra + 1)):
         gaussians.active_spectra = spectral_id
@@ -209,19 +211,22 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         fps = float(5) if 'train' in out_path else float(1)
         writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
 
-        for file_name in sorted(os.listdir(gts_path)):
-            gt = np.array(Image.open(os.path.join(gts_path,file_name)))
-            rgb = np.array(Image.open(os.path.join(render_path,file_name)))
-            pred_obj = np.array(Image.open(os.path.join(pred_obj_path,file_name)))
-            color_mask = np.array(Image.open(os.path.join(colormask_path,file_name)))
-            # pred_obj = np.array(Image.open(os.path.join(roughness_path,file_name)))
-            # pred_obj = np.array(Image.open(os.path.join(normal,file_name)))
+        # TEMP: removed segmentation
+        # for file_name in sorted(os.listdir(gts_path)):
+        #     gt = np.array(Image.open(os.path.join(gts_path,file_name)))
+        #     rgb = np.array(Image.open(os.path.join(render_path,file_name)))
+            
+        #     pred_obj = np.array(Image.open(os.path.join(pred_obj_path,file_name)))
+        #     color_mask = np.array(Image.open(os.path.join(colormask_path,file_name)))
+            
+        #     # pred_obj = np.array(Image.open(os.path.join(roughness_path,file_name)))
+        #     # pred_obj = np.array(Image.open(os.path.join(normal,file_name)))
 
-            result = np.hstack([gt,rgb,pred_obj, color_mask])
-            result = result.astype('uint8')
+        #     result = np.hstack([gt,rgb,pred_obj, color_mask])
+        #     result = result.astype('uint8')
 
-            Image.fromarray(result).save(os.path.join(out_path,file_name))
-            writer.write(result[:,:,::-1])
+        #     Image.fromarray(result).save(os.path.join(out_path,file_name))
+        #     writer.write(result[:,:,::-1])
 
         writer.release()
 
@@ -235,9 +240,11 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         num_classes = dataset.num_classes
         print("Num classes: ",num_classes)
 
-        classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
-        classifier.cuda()
-        classifier.load_state_dict(torch.load(os.path.join(dataset.model_path,"point_cloud","iteration_"+str(scene.loaded_iter)+"_" + str(n_spectra),"classifier.pth")))
+        # TEMP: removed segmentation
+        classifier = None
+        # classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
+        # classifier.cuda()
+        # classifier.load_state_dict(torch.load(os.path.join(dataset.model_path,"point_cloud","iteration_"+str(scene.loaded_iter)+"_" + str(n_spectra),"classifier.pth")))
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
