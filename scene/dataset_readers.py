@@ -20,8 +20,15 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from glob import glob
+import torch
 
 
+mode_id = {
+    "parallel": 0,
+    "cone": 1,
+}
+
+# ------ Default SpectralGaussian info ------
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -43,6 +50,36 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
     spectral_ids: list
+
+# ------ Spectral CT info -------
+class CameraInfoSpecCT(NamedTuple):
+    uid: int
+    R: np.array
+    T: np.array
+    angle: float                # CT
+    FovY: np.array
+    FovX: np.array
+    image: np.array
+    image_path: str
+    image_name: str
+    width: int
+    height: int
+    objects: np.array           # spectral
+    spectral_images:list        # spectral
+    mode: int                   # CT
+    scanner_cfg: dict           # CT
+
+class SceneInfoSpecCT(NamedTuple):
+    point_cloud: BasicPointCloud
+    scanner_cfg: dict               # CT
+    vol: torch.tensor               # CT
+    scene_scale: float              # CT
+    spectral_ids: list              # spectral
+    train_cameras: list             # both
+    test_cameras: list              # both
+    nerf_normalization: dict        # spectral
+    ply_path: str                   # spectral
+
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -370,7 +407,259 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", spectr
                            ply_path=ply_path, spectral_ids=spectral_ids)
     return scene_info
 
+
+def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, train_split=None, llffhold=8, n_views=100, white_background=False, rgba=False):
+    """Read blender format CT data."""
+    print("reading CT dataset")
+
+    reading_dir = "images" if images == None else images
+    images_folder = os.path.join(path, reading_dir)
+
+    # Read meta data
+    meta_data_path = os.path.join(path, "meta_data.json")
+    with open(meta_data_path, "r") as handle:
+        meta_data = json.load(handle)
+    meta_data["ct"] = os.path.join(path, meta_data["ct"])
+
+    if not "dVoxel" in meta_data["scanner"]:
+        meta_data["scanner"]["dVoxel"] = list(
+            np.array(meta_data["scanner"]["sVoxel"])
+            / np.array(meta_data["scanner"]["nVoxel"])
+        )
+    if not "dDetector" in meta_data["scanner"]:
+        meta_data["scanner"]["dDetector"] = list(
+            np.array(meta_data["scanner"]["sDetector"])
+            / np.array(meta_data["scanner"]["nDetector"])
+        )
+
+    #! We will scale the scene so that the volume of interest is in [-1, 1]^3 cube.
+    scene_scale = 2 / max(meta_data["scanner"]["sVoxel"])
+    for key_to_scale in [
+        "dVoxel",
+        "sVoxel",
+        "sDetector",
+        "dDetector",
+        "offOrigin",
+        "offDetector",
+        "DSD",
+        "DSO",
+    ]:
+        meta_data["scanner"][key_to_scale] = (
+            np.array(meta_data["scanner"][key_to_scale]) * scene_scale
+        ).tolist()
+
+    # Initial reconstructed CT volume (Ground Truth)
+    vol_gt = torch.from_numpy(np.load(meta_data["ct"])).float().cuda()
+
+    # Spectral ids
+    spectra_dir = 'spectra' if spectra_path== None else spectra_path
+    spectral_folder = os.path.join(path, spectra_dir)
+    num_spectra = len(glob(spectral_folder + '/*'))
+    spectral_ids = list(range(1,num_spectra + 1))
+
+    # Cameras (train / test)
+    cam_infos_unsorted = readCTameras(meta_data, images_folder, spectral_folder, white_background, rgba, scene_scale)
+    cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    if eval:
+        if train_split:
+            train_dir = os.path.join(path, "images_train")
+            train_names = sorted(os.listdir(train_dir))
+            train_names = [train_name.split('.')[0] for train_name in train_names]
+            train_cam_infos = []
+            test_cam_infos = []
+            for cam_info in cam_infos:
+                if cam_info.image_name in train_names:
+                    train_cam_infos.append(cam_info)
+                else:
+                    test_cam_infos.append(cam_info)
+
+        else:
+            train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+            test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+
+            if n_views == 100:
+                pass 
+            elif n_views == 50:
+                idx_sub = np.linspace(0, len(train_cam_infos)-1, round(len(train_cam_infos)*0.5)) # 50% views
+                idx_sub = [round(i) for i in idx_sub]
+                train_cam_infos = [train_cam_infos[i_sub] for i_sub in idx_sub]
+            elif isinstance(n_views,int):
+                idx_sub = np.linspace(0, len(train_cam_infos)-1, n_views) # 3views
+                idx_sub = [round(i) for i in idx_sub]
+                train_cam_infos = [train_cam_infos[i_sub] for i_sub in idx_sub]
+                print(train_cam_infos)
+            else:
+                raise NotImplementedError
+        print("Training images:     ", len(train_cam_infos))
+        print("Testing images:     ", len(test_cam_infos))
+
+    else:
+        if train_split:
+            train_dir = os.path.join(path, "images_train")
+            train_names = sorted(os.listdir(train_dir))
+            train_names = [train_name.split('.')[0] for train_name in train_names]
+            train_cam_infos = []
+            for cam_info in cam_infos:
+                if cam_info.image_name in train_names:
+                    train_cam_infos.append(cam_info)
+            test_cam_infos = []
+        else:
+            train_cam_infos = cam_infos
+            test_cam_infos = []
+
+    # Nerf normalization
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    # Point cloud and ply_path
+    if random_init:
+        raise NotImplementedError('')
+
+    else:
+        ply_path = os.path.join(path, "points3D.ply")
+        npy_path = os.path.join(path, "init_pcd.npy")
+        if os.path.exists(npy_path):
+            print("Detected .npy point cloud, converting to .ply...")
+
+        data_np = np.load(npy_path)  # shape: (N,4) [x, y, z, density]
+
+        xyz      = data_np[:, :3]
+        density  = data_np[:,  3]
+
+        density_min = np.min(density)
+        density_max = np.max(density)
+    
+        rng = max(density_max - density_min, 1e-9)
+        gray_vals = (density - density_min) / rng  # shape: (N,)
+        rgb = np.stack([gray_vals, gray_vals, gray_vals], axis=-1)
+
+        color = rgb * 255.0
+        storePly(ply_path, xyz, color)
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(color), normals=np.zeros((xyz.shape[0], 3)))
+
+    scene_info = SceneInfoSpecCT(
+        point_cloud=pcd,
+        scanner_cfg=meta_data["scanner"],
+        vol=vol_gt,
+        scene_scale=scene_scale,
+        spectral_ids=spectral_ids,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path
+    )
+    
+    return scene_info
+
+def readCTameras(meta_data, images_folder, spectral_folder, white_background, rgba, scene_scale=1.0):
+    """Read camera info."""
+    cam_cfg = meta_data["scanner"]
+
+    cams = meta_data["cameras"]
+
+    cam_infos = []
+    for idx, cam in enumerate(cams):
+        sys.stdout.write("\r")
+        sys.stdout.write(f"Reading camera {idx + 1}")
+        sys.stdout.flush()
+
+        frame_angle = cam["angle"]
+        mode = mode_id[cam_cfg["mode"]]
+
+        # CT 'transform_matrix' is a camera-to-world transform
+        c2w = angle2pose(cam_cfg["DSO"], frame_angle)  # c2w
+        # get the world-to-camera transform and set R, T
+        w2c = np.linalg.inv(c2w)
+        R = np.transpose(
+            w2c[:3, :3]
+        )  # R is stored transposed due to 'glm' in CUDA code
+        T = w2c[:3, 3]
+
+        # Note, dDetector is [v, u] not [u, v]
+        FovX = np.arctan2(cam_cfg["sDetector"][1] / 2, cam_cfg["DSD"]) * 2
+        FovY = np.arctan2(cam_cfg["sDetector"][0] / 2, cam_cfg["DSD"]) * 2
+
+        # Image
+        image_name = cam["file_path"]
+        image_path = os.path.join(images_folder, image_name)
+        image = np.load(image_path) * scene_scale
+        image = (image * 255).astype(np.uint8)  # Convert to uint8
+        image = Image.fromarray(image).convert("RGBA") # Convert to RGBA (grayscale with alpha)
+        if rgba:
+            image = fix_background_rgba(image, white_background)
+
+        # Spectral images
+        spectral_list = sorted(glob(spectral_folder + '/*'))
+        spectral_images = []
+        for spectra in spectral_list:
+            spectra_img_path = os.path.join(spectral_folder, spectra, image_name)
+            spectra_img = np.load(spectra_img_path) * scene_scale
+            spectra_img = (spectra_img * 255).astype(np.uint8)  # Convert to uint8
+            spectra_img = Image.fromarray(spectra_img).convert("RGBA") # Convert to RGBA (grayscale with alpha)
+            if rgba:
+                spectra_img = fix_background_rgba(spectra_img, white_background)
+            spectral_images.append(spectra_img)
+
+        cam_info = CameraInfoSpecCT(
+            uid=idx,
+            R=R,
+            T=T,
+            angle=frame_angle,
+            FovY=FovY,
+            FovX=FovX,
+            image=image,
+            image_path=image_path,
+            image_name=os.path.basename(image_path).split(".")[0],
+            width=cam_cfg["nDetector"][1],
+            height=cam_cfg["nDetector"][0],
+            objects=None,
+            spectral_images=spectral_images,
+            mode=mode,
+            scanner_cfg=cam_cfg,
+        )
+        cam_infos.append(cam_info)
+    sys.stdout.write("\n")
+    return cam_infos
+
+def angle2pose(DSO, angle):
+    """Transfer angle to pose (c2w) based on scanner geometry.
+    1. rotate -90 degree around x-axis (fixed axis),
+    2. rotate 90 degree around z-axis  (fixed axis),
+    3. rotate angle degree around z axis  (fixed axis)"""
+
+    phi1 = -np.pi / 2
+    R1 = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(phi1), -np.sin(phi1)],
+            [0.0, np.sin(phi1), np.cos(phi1)],
+        ]
+    )
+    phi2 = np.pi / 2
+    R2 = np.array(
+        [
+            [np.cos(phi2), -np.sin(phi2), 0.0],
+            [np.sin(phi2), np.cos(phi2), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    R3 = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    rot = np.dot(np.dot(R3, R2), R1)
+    trans = np.array([DSO * np.cos(angle), DSO * np.sin(angle), 0])
+    transform = np.eye(4)
+    transform[:3, :3] = rot
+    transform[:3, 3] = trans
+
+    return transform
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "CT" : readBlenderCTInfo
 }

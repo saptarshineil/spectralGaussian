@@ -47,9 +47,22 @@ class Scene:
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+        # R2-Gaussian CT dataset format
+        elif os.path.exists(os.path.join(args.source_path, "meta_data.json")):
+            print("Found meta_data.json file, assuming Blender CT data set!")
+            scene_info = sceneLoadTypeCallbacks["CT"](
+                args.source_path,
+                args.images,
+                args.eval,
+                random_init = args.random_init,
+                train_split = args.train_split,
+                white_background = args._white_background,
+                rgba=args.transparentbg
+            )
         else:
             assert False, "Could not recognize scene type!"
 
+        # No pre-trained model --> read e.g. sparse/0/points3D.ply file
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())
@@ -77,6 +90,7 @@ class Scene:
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
+        # Load pre-trained model
         if self.loaded_iter:
             if isinstance(self.loaded_iter,str):
                 print("edit load path", self.loaded_iter)
