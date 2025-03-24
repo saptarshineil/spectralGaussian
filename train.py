@@ -23,7 +23,7 @@ import wandb
 import json
 import torchvision
 import numpy as np
-# from scene.gaussian import render, query
+from gaussian_renderer.render_query import render, query
 
 
 def training(
@@ -58,21 +58,28 @@ def training(
     scale_bound = None
     if dataset.scale_min > 0 and dataset.scale_max > 0:
         scale_bound = np.array([dataset.scale_min, dataset.scale_max]) * volume_to_world
-    # queryfunc = lambda x: query(
-    #     x,
-    #     scanner_cfg["offOrigin"],
-    #     scanner_cfg["nVoxel"],
-    #     scanner_cfg["sVoxel"],
-    #     pipe,
-    # )
+    queryfunc = lambda x: query(
+        x,
+        scanner_cfg["offOrigin"],
+        scanner_cfg["nVoxel"],
+        scanner_cfg["sVoxel"],
+        pipe,
+    )
 
-    gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res, n_spectra)
-    
+    # Set up Gaussians
+    gaussians = GaussianModel(
+        dataset.sh_degree,          # Spectral 
+        dataset.brdf_dim,           # Spectral
+        dataset.brdf_mode,          # Spectral
+        dataset.brdf_envmap_res,    # Spectral
+        n_spectra,                  # Spectral
+        scale_bound                 # CT
+    )
     scene.init_gaussians(gaussians)
-    
     gaussians.training_setup(opt)
     
     # TEMP: removed segmentation
+    # Set up segmentation
     # num_classes = dataset.num_classes
     # print("Num classes: ",num_classes)
     # classifier = torch.nn.Conv2d(gaussians.num_objects, num_classes, kernel_size=1)
@@ -84,9 +91,11 @@ def training(
         # (model_params, first_iter) = torch.load(checkpoint)
         # gaussians.restore(model_params, opt)
 
+    # Set up background
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+    # Set up training loop
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 

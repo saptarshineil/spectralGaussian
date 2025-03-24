@@ -16,10 +16,20 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
-from utils.general_utils import strip_symmetric, build_scaling_rotation, get_minimum_axis, flip_align_view
+# from utils.general_utils import strip_symmetric, build_scaling_rotation, get_minimum_axis, flip_align_view
+from utils.general_utils import strip_symmetric, get_minimum_axis, flip_align_view
 from scipy.spatial import KDTree
 from scene.NVDIFFREC import create_trainable_env_rnd
 import open3d as o3d
+from utils.gaussian_utils import (
+    inverse_sigmoid,
+    get_expon_lr_func,
+    build_rotation,
+    inverse_softplus,
+    strip_symmetric,
+    build_scaling_rotation,
+)
+
 
 class GaussianModel:
 
@@ -30,124 +40,116 @@ class GaussianModel:
             symm = strip_symmetric(actual_covariance)
             return symm
         
-        self.scaling_activation = torch.exp
-        self.scaling_inverse_activation = torch.log
+        if self.scale_bound is not None:
+            scale_min_bound, scale_max_bound = self.scale_bound
+            assert (
+                scale_min_bound < scale_max_bound
+            ), "scale_min must be smaller than scale_max."
+            self.scaling_activation = (
+                lambda x: torch.sigmoid(x) * (scale_max_bound - scale_min_bound)
+                + scale_min_bound
+            )
+            self.scaling_inverse_activation = lambda x: inverse_sigmoid(
+                torch.relu((x - scale_min_bound) / (scale_max_bound - scale_min_bound))
+            )
+        else:
+            self.scaling_activation = torch.exp
+            self.scaling_inverse_activation = torch.log
 
         self.covariance_activation = build_covariance_from_scaling_rotation
 
-        self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
+        # self.opacity_activation = torch.sigmoid
+        # self.inverse_opacity_activation = inverse_sigmoid
+        # -- CT --
+        self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
+        self.inverse_opacity_activation = inverse_softplus
 
         self.rotation_activation = torch.nn.functional.normalize
 
-
-    def __init__(self, sh_degree : int, brdf_dim : int, brdf_mode : str, brdf_envmap_res: int, n_spectra : int):
+    def __init__(self, sh_degree : int, brdf_dim : int, brdf_mode : str, brdf_envmap_res: int, n_spectra : int, scale_bound=None):
 
         if (brdf_dim>=0 and sh_degree>=0) or (brdf_dim<0 and sh_degree<0):
             raise Exception('Please provide exactly one of either brdf_dim or sh_degree!')
         self.brdf = brdf_dim>=0
 
-
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
 
-        #shape attributes
-        self._xyz = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.num_objects = 16
+        # -- General attributes --
+        self._xyz = torch.empty(0) # world coordinate
+        self._scaling = torch.empty(0) # 3d scale
+        self._rotation = torch.empty(0) # rotation expressed in quaternions
+        self._opacity = torch.empty(0) # opacity
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
-        self.percent_dense = 0
         self.spatial_lr_scale = 0
+        
+        # -- Spectral attributes --
+        self.percent_dense = 0
         self.num_spectral_bands = n_spectra
-
         self.active_spectra = 0
-        #segmentation attributes
+        # segmentation attributes
+        self.num_objects = 16
         self._objects_dc = []
-
         self._features_dc = []
         self._features_rest = []
-
         # brdf setting
         self.brdf_dim = brdf_dim  
         self.brdf_mode = brdf_mode  
         self.brdf_envmap_res = brdf_envmap_res  
-
-        #brdf attributes
+        # brdf attributes
         self._normal = []
         self._normal2 = []
         self._specular = []
         self._roughness = []
         self.spectral_ids = list(range(0, self.num_spectral_bands + 1))
-
         if self.brdf:
             self.create_brdf_mlps()
         else:
             self.brdf_mlp = None    
-        
         self.diffuse_activation = torch.sigmoid
         self.specular_activation = torch.sigmoid
         self.default_roughness = 0.0
         self.roughness_activation = torch.sigmoid
         self.roughness_bias = 0.
         self.default_roughness = 0.6
-       
+
+        # -- CT attributes --
+        self.scale_bound = scale_bound
 
         self.setup_functions()
-    
 
     def set_requires_grad(self, tensor, requires_grad):
             """Returns a new tensor with the specified requires_grad setting."""
             return tensor.detach().clone().requires_grad_(requires_grad)
 
-
     def capture(self):
         return (
-            self.active_sh_degree,
             self._xyz,
-            self._features_dc,
-            self._features_rest,
             self._scaling,
             self._rotation,
             self._opacity,
-            self._objects_dc,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self.active_sh_degree, # spectral
+            self._features_dc,     # spectral
+            self._features_rest,   # spectral
+            self._objects_dc,      # spectral
+            self.scale_bound,      # CT
         )
     
-    def capture(self):
-        return (
-            self.active_sh_degree,
-            self._xyz,
-            self._features_dc,
-            self._features_rest,
-            self._scaling,
-            self._rotation,
-            self._opacity,
-            self._objects_dc,
-            self.max_radii2D,
-            self.xyz_gradient_accum,
-            self.denom,
-            self.optimizer.state_dict(),
-            self.spatial_lr_scale,
-        )
-
-   
-
+    # Spectral 
     def create_brdf_mlps(self):
         self.brdf_mlp = []
         for spectral_id in self.spectral_ids:
             self.brdf_mlp.append(create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8))
-            
 
-
+    # Spectral    
     def get_normal(self, dir_pp_normalized=None, return_delta=False):
         normal_axis = self.get_minimum_axis
         normal_axis = normal_axis
@@ -164,27 +166,23 @@ class GaussianModel:
         else:
             return normal
     
-    
+    # Spectral
     def get_diffuse(self):
         return self._features_dc[self.active_spectra]
     
-    # def get_diffuse_spectra(self):
-    #     return self._features_dc[self.active_spectra]
-
-
-    
+    # Spectral
     def get_specular(self):
         return self.specular_activation(self._specular[self.active_spectra])
-
     
+    # Spectral
     def get_roughness(self):
         return self.roughness_activation(self._roughness[self.active_spectra] + self.roughness_bias)
 
-    
+    # Spectral
     def get_brdf_features(self):
         return self._features_rest[self.active_spectra]
     
-
+    # Spectral
     def average_params_full_spectra(self):
         self.set_grad_params(self.active_spectra, False, False)
         self._normal[0] = torch.stack(self._normal[1:]).mean(dim=0)
@@ -193,47 +191,25 @@ class GaussianModel:
         # self._specular[0] = torch.stack(self._specular[1:]).mean(dim=0)
         self._roughness[0] = torch.stack(self._roughness[1:]).mean(dim=0)
 
-
+    # Spectral
     @property
     def get_minimum_axis(self):
         return get_minimum_axis(self.get_scaling, self.get_rotation)
-
-
-    # def capture(self):
-    #     return (
-    #         self.active_sh_degree,
-    #         self._xyz,
-    #         self._features_dc,
-    #         self._features_rest,
-    #         self._scaling,
-    #         self._rotation,
-    #         self._opacity,
-    #         self._objects_dc,
-    #         self.max_radii2D,
-    #         self.xyz_gradient_accum,
-    #         self.denom,
-    #         self.optimizer.state_dict(),
-    #         self.spatial_lr_scale,
-    #     )
     
-    # def restore(self, model_args, training_args):
-    #     (self.active_sh_degree, 
-    #     self._xyz, 
-    #     self._features_dc, 
-    #     self._features_rest,
-    #     self._scaling, 
-    #     self._rotation, 
-    #     self._opacity,
-    #     self._objects_dc,
-    #     self.max_radii2D, 
-    #     xyz_gradient_accum, 
-    #     denom,
-    #     opt_dict, 
-    #     self.spatial_lr_scale) = model_args
-    #     self.training_setup(training_args)
-    #     self.xyz_gradient_accum = xyz_gradient_accum
-    #     self.denom = denom
-    #     self.optimizer.load_state_dict(opt_dict)
+    # Spectral
+    def get_features(self):
+        features_dc = self._features_dc[self.active_spectra]
+        features_rest = self._features_rest[self.active_spectra]
+        return torch.cat((features_dc, features_rest), dim=1)
+   
+    # Spectral
+    def get_objects(self):
+        return self._objects_dc[self.active_spectra]
+    
+    # Spectral
+    def oneupSHdegree(self):
+        if self.active_sh_degree < self.max_sh_degree:
+            self.active_sh_degree += 1
 
     @property
     def get_scaling(self):
@@ -247,24 +223,12 @@ class GaussianModel:
     def get_xyz(self):
         return self._xyz
     
-    def get_features(self):
-        features_dc = self._features_dc[self.active_spectra]
-        features_rest = self._features_rest[self.active_spectra]
-        return torch.cat((features_dc, features_rest), dim=1)
-   
-    def get_objects(self):
-        return self._objects_dc[self.active_spectra]
-    
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
-
-    def oneupSHdegree(self):
-        if self.active_sh_degree < self.max_sh_degree:
-            self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
@@ -328,7 +292,6 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
        
-
     def training_setup(self, training_args):
         self.fix_brdf_lr = training_args.fix_brdf_lr
         self.percent_dense = training_args.percent_dense
@@ -368,205 +331,6 @@ class GaussianModel:
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
-        
-        
-
-    #segmentation, inpainting and removal
-    #style transfer    
-    def finetune_setup(self, training_args, mask3d, spectral_id):
-        # Define a function that applies the mask to the gradients
-        def mask_hook(grad):
-            return grad * mask3d
-        def mask_hook2(grad):
-            return grad * mask3d.squeeze(-1)
-        
-
-        # Register the hook to the parameter (only once!)
-        hook_xyz = self._xyz.register_hook(mask_hook2)
-        hook_dc = self._features_dc.register_hook(mask_hook)
-        hook_rest = self._features_rest.register_hook(mask_hook)
-        hook_opacity = self._opacity.register_hook(mask_hook2)
-        hook_scaling = self._scaling.register_hook(mask_hook2)
-        hook_rotation = self._rotation.register_hook(mask_hook2)
-
-        self._objects_dc.requires_grad = False
-
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._features_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "f_dc_"+str(spectral_id)},
-            {'params': [self._features_rest[spectral_id]], 'lr': training_args.feature_lr / 20.0, "name": "f_rest_"+str(spectral_id)},
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
-            {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
-        ]
-
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-
-    def removal_setup(self, training_args, mask3d, spectral_id):
-
-        mask3d = ~mask3d.bool().squeeze()
-
-        # Extracting subsets using the mask
-        xyz_sub = self._xyz[mask3d].detach()
-        features_dc_sub = self._features_dc[spectral_id][mask3d].detach()
-        features_rest_sub = self._features_rest[spectral_id][mask3d].detach()
-        opacity_sub = self._opacity[mask3d].detach()
-        scaling_sub = self._scaling[mask3d].detach()
-        rotation_sub = self._rotation[mask3d].detach()
-        objects_dc_sub = self._objects_dc[spectral_id][mask3d].detach()
-        normals_sub = self._normal[spectral_id][mask3d].detach()
-        normals2_sub = self._normal2[spectral_id][mask3d].detach()
-        roughness_sub = self._roughness[spectral_id][mask3d].detach()
-        specular_sub = self._specular[spectral_id][mask3d].detach()
-        
-
-
-        def set_requires_grad(tensor, requires_grad):
-            """Returns a new tensor with the specified requires_grad setting."""
-            return tensor.detach().clone().requires_grad_(requires_grad)
-
-        # Construct nn.Parameters with specified gradients
-        self._xyz = nn.Parameter(set_requires_grad(xyz_sub, False))
-        self._features_dc[spectral_id] = nn.Parameter(set_requires_grad(features_dc_sub, False))
-        self._features_rest[spectral_id] = nn.Parameter(set_requires_grad(features_rest_sub, False))
-        self._opacity = nn.Parameter(set_requires_grad(opacity_sub, False))
-        self._scaling = nn.Parameter(set_requires_grad(scaling_sub, False))
-        self._rotation = nn.Parameter(set_requires_grad(rotation_sub, False))
-        self._objects_dc[spectral_id] = nn.Parameter(set_requires_grad(objects_dc_sub, False))
-        self._normal[spectral_id] = nn.Parameter(set_requires_grad(normals_sub, False))
-        self._normal2[spectral_id] = nn.Parameter(set_requires_grad(normals2_sub, False))
-        self._roughness[spectral_id] = nn.Parameter(set_requires_grad(roughness_sub, False))
-        self._specular[spectral_id] = nn.Parameter(set_requires_grad(specular_sub, False))
-
-
-    def inpaint_setup(self, training_args, mask3d, spectral_id):
-
-        def initialize_new_features(features, num_new_points, mask_xyz_values, distance_threshold=0.25, max_distance_threshold=1, k=5):
-            """Initialize new points for multiple features based on neighbouring points in the remaining area."""
-            new_features = {}
-            
-            if num_new_points == 0:
-                for key in features:
-                    new_features[key] = torch.empty((0, *features[key].shape[1:]), device=features[key].device)
-                return new_features
-
-            # Get remaining points from features
-            remaining_xyz_values = features["xyz"]
-            remaining_xyz_values_np = remaining_xyz_values.cpu().numpy()
-            
-            # Build a KD-Tree for fast nearest-neighbor lookup
-            kdtree = KDTree(remaining_xyz_values_np)
-            
-            # Sample random points from mask_xyz_values as query points
-            mask_xyz_values_np = mask_xyz_values.cpu().numpy()
-            query_points = mask_xyz_values_np
-
-            # Find the k nearest neighbors in the remaining points for each query point
-            distances, indices = kdtree.query(query_points, k=k)
-            selected_indices = indices
-
-            # Initialize new points for each feature
-            for key, feature in features.items():
-                # Convert feature to numpy array
-                feature_np = feature.cpu().numpy()
-                
-                # If we have valid neighbors, calculate the mean of neighbor points
-                if feature_np.ndim == 2:
-                    neighbor_points = feature_np[selected_indices]
-                elif feature_np.ndim == 3:
-                    neighbor_points = feature_np[selected_indices, :, :]
-                else:
-                    raise ValueError(f"Unsupported feature dimension: {feature_np.ndim}")
-                new_points_np = np.mean(neighbor_points, axis=1)
-                
-                # Convert back to tensor
-                new_features[key] = torch.tensor(new_points_np, device=feature.device, dtype=feature.dtype)
-            
-            return new_features['xyz'], new_features['features_dc_'+str(spectral_id)], new_features['scaling'], new_features['objects_dc_'+str(spectral_id)], new_features['features_rest_'+str(spectral_id)], new_features['opacity'], new_features['rotation'],new_features['roughness_'+str(spectral_id)],new_features['specular_'+str(spectral_id)],new_features['normal_'+str(spectral_id)],new_features['normal2_'+str(spectral_id)]
-        
-        mask3d = ~mask3d.bool().squeeze()
-        mask_xyz_values = self._xyz[~mask3d]
-
-        # Extracting subsets using the mask
-        xyz_sub = self._xyz[mask3d].detach()
-        features_dc_sub = self._features_dc[spectral_id][mask3d].detach()
-        features_rest_sub = self._features_rest[spectral_id][mask3d].detach()
-        opacity_sub = self._opacity[mask3d].detach()
-        scaling_sub = self._scaling[mask3d].detach()
-        rotation_sub = self._rotation[mask3d].detach()
-        objects_dc_sub = self._objects_dc[spectral_id][mask3d].detach()
-        normals_sub = self._normal[spectral_id][mask3d].detach()
-        normals2_sub = self._normal2[spectral_id][mask3d].detach()
-        roughness_sub = self._roughness[spectral_id][mask3d].detach()
-        specular_sub = self._specular[spectral_id][mask3d].detach()
-        
-
-        # Add new points with random initialization
-        sub_features = {
-            'xyz': xyz_sub,
-            'features_dc_'+str(spectral_id): features_dc_sub,
-            'scaling': scaling_sub,
-            'objects_dc_'+str(spectral_id): objects_dc_sub,
-            'features_rest_'+str(spectral_id): features_rest_sub,
-            'opacity': opacity_sub,
-            'rotation': rotation_sub,
-            'roughness_'+str(spectral_id):roughness_sub,
-            'specular_'+str(spectral_id):specular_sub,
-            'normal_'+str(spectral_id):normals_sub,
-            'normal2_'+str(spectral_id):normals2_sub
-        }
-
-        num_new_points = len(mask_xyz_values)
-        with torch.no_grad():
-            new_xyz, new_features_dc, new_scaling, new_objects_dc, new_features_rest, new_opacity, new_rotation, new_roughness, new_specular, new_normal, new_normal2 = initialize_new_features(sub_features, num_new_points, mask_xyz_values)
-
-        def set_requires_grad(tensor, requires_grad):
-            """Returns a new tensor with the specified requires_grad setting."""
-            return tensor.detach().clone().requires_grad_(requires_grad)
-
-        # Construct nn.Parameters with specified gradients
-        self._xyz = nn.Parameter(torch.cat([set_requires_grad(xyz_sub, False), set_requires_grad(new_xyz, True)]))
-        self._features_dc[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(features_dc_sub, False), set_requires_grad(new_features_dc, True)]))
-        self._features_rest[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(features_rest_sub, False), set_requires_grad(new_features_rest, True)]))
-        self._opacity = nn.Parameter(torch.cat([set_requires_grad(opacity_sub, False), set_requires_grad(new_opacity, True)]))
-        self._scaling = nn.Parameter(torch.cat([set_requires_grad(scaling_sub, False), set_requires_grad(new_scaling, True)]))
-        self._rotation = nn.Parameter(torch.cat([set_requires_grad(rotation_sub, False), set_requires_grad(new_rotation, True)]))
-        self._objects_dc[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(objects_dc_sub, False), set_requires_grad(new_objects_dc, True)]))
-        self._roughness[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(roughness_sub, False), set_requires_grad(new_roughness, True)]))
-        self._specular[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(specular_sub, False), set_requires_grad(new_specular, True)]))
-        self._normal[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(normals_sub, False), set_requires_grad(new_normal, True)]))
-        self._normal2[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(normals2_sub, False), set_requires_grad(new_normal2, True)]))
-
-        # for optimize
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.percent_dense = training_args.percent_dense
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-
-        # Setup optimizer. Only the new points will have gradients.
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
-            {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
-        ]
-
-        l.extend([  {'params': [self._features_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "f_dc_"+ str(spectral_id)},
-                    {'params': [self._features_rest[spectral_id]], 'lr': training_args.feature_lr / 20.0, "name": "f_rest_" + str(spectral_id)},
-                    {'params': [self._roughness[spectral_id]], 'lr': training_args.roughness_lr, "name": "roughness_" + str(spectral_id)},
-                    {'params': [self._specular[spectral_id]], 'lr': training_args.specular_lr, "name": "specular_" + str(spectral_id)},
-                    {'params': [self._normal[spectral_id]], 'lr': training_args.normal_lr, "name": "normal_" + str(spectral_id)},
-                    {'params': [self._normal2[spectral_id]], 'lr': training_args.normal_lr, "name": "normal2_" + str(spectral_id)},
-                    {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
-                ])
-
-        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
@@ -861,6 +625,7 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
 
         return optimizable_tensors
+    
     def densification_postfix_per_spectra(self, new_features_dc, new_features_rest,new_objects_dc,  new_roughness, new_specular, new_normal, new_normal2, spectral_id):
         d = {}
         d.update({"f_dc_"+ str(spectral_id): new_features_dc,"f_rest_"+ str(spectral_id): new_features_rest,"obj_dc_"+ str(spectral_id): new_objects_dc})
@@ -882,7 +647,6 @@ class GaussianModel:
             self._specular[spectral_id] = optimizable_tensors["specular_"+ str(spectral_id)]
             self._normal[spectral_id] = optimizable_tensors["normal_"+ str(spectral_id)]
             self._normal2[spectral_id] = optimizable_tensors["normal2_"+ str(spectral_id)]
-
 
     def densification_postfix(self, new_xyz, new_opacities, new_scaling, new_rotation):
         d = {"xyz": new_xyz,
@@ -973,11 +737,6 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
-    # def set_requires_grad(self, attrib_name, state: bool):
-    #     getattr(self, f"_{attrib_name}").requires_grad = state
-    
-    
-    
     def set_grad_params(self, spectral_id, state, normal_state):
         self.set_requires_grad(self.brdf_mlp[spectral_id].base, state)
         self.set_requires_grad(self.brdf_mlp[spectral_id].env_base, state)
@@ -988,7 +747,6 @@ class GaussianModel:
         self.set_requires_grad(self._features_dc[spectral_id], state)
         self.set_requires_grad(self._features_rest[spectral_id], state)
         self.set_requires_grad(self._objects_dc[spectral_id], state)
-    
 
     def activate_spectra(self, active_spectral_id, set_grad_normals):
         if self.brdf:
@@ -1001,5 +759,196 @@ class GaussianModel:
                     self.set_grad_params(spectral_id, False, False)
 
 
+# TODO: Uncomment
+    # #segmentation, inpainting and removal
+    # #style transfer    
+    # def finetune_setup(self, training_args, mask3d, spectral_id):
+    #     # Define a function that applies the mask to the gradients
+    #     def mask_hook(grad):
+    #         return grad * mask3d
+    #     def mask_hook2(grad):
+    #         return grad * mask3d.squeeze(-1)
+        
 
-              
+    #     # Register the hook to the parameter (only once!)
+    #     hook_xyz = self._xyz.register_hook(mask_hook2)
+    #     hook_dc = self._features_dc.register_hook(mask_hook)
+    #     hook_rest = self._features_rest.register_hook(mask_hook)
+    #     hook_opacity = self._opacity.register_hook(mask_hook2)
+    #     hook_scaling = self._scaling.register_hook(mask_hook2)
+    #     hook_rotation = self._rotation.register_hook(mask_hook2)
+
+    #     self._objects_dc.requires_grad = False
+
+    #     self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+    #     self.percent_dense = training_args.percent_dense
+    #     self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+    #     self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        
+    #     l = [
+    #         {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+    #         {'params': [self._features_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "f_dc_"+str(spectral_id)},
+    #         {'params': [self._features_rest[spectral_id]], 'lr': training_args.feature_lr / 20.0, "name": "f_rest_"+str(spectral_id)},
+    #         {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+    #         {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+    #         {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+    #         {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
+    #     ]
+
+    #     self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+
+    # def removal_setup(self, training_args, mask3d, spectral_id):
+
+    #     mask3d = ~mask3d.bool().squeeze()
+
+    #     # Extracting subsets using the mask
+    #     xyz_sub = self._xyz[mask3d].detach()
+    #     features_dc_sub = self._features_dc[spectral_id][mask3d].detach()
+    #     features_rest_sub = self._features_rest[spectral_id][mask3d].detach()
+    #     opacity_sub = self._opacity[mask3d].detach()
+    #     scaling_sub = self._scaling[mask3d].detach()
+    #     rotation_sub = self._rotation[mask3d].detach()
+    #     objects_dc_sub = self._objects_dc[spectral_id][mask3d].detach()
+    #     normals_sub = self._normal[spectral_id][mask3d].detach()
+    #     normals2_sub = self._normal2[spectral_id][mask3d].detach()
+    #     roughness_sub = self._roughness[spectral_id][mask3d].detach()
+    #     specular_sub = self._specular[spectral_id][mask3d].detach()
+        
+    #     def set_requires_grad(tensor, requires_grad):
+    #         """Returns a new tensor with the specified requires_grad setting."""
+    #         return tensor.detach().clone().requires_grad_(requires_grad)
+
+    #     # Construct nn.Parameters with specified gradients
+    #     self._xyz = nn.Parameter(set_requires_grad(xyz_sub, False))
+    #     self._features_dc[spectral_id] = nn.Parameter(set_requires_grad(features_dc_sub, False))
+    #     self._features_rest[spectral_id] = nn.Parameter(set_requires_grad(features_rest_sub, False))
+    #     self._opacity = nn.Parameter(set_requires_grad(opacity_sub, False))
+    #     self._scaling = nn.Parameter(set_requires_grad(scaling_sub, False))
+    #     self._rotation = nn.Parameter(set_requires_grad(rotation_sub, False))
+    #     self._objects_dc[spectral_id] = nn.Parameter(set_requires_grad(objects_dc_sub, False))
+    #     self._normal[spectral_id] = nn.Parameter(set_requires_grad(normals_sub, False))
+    #     self._normal2[spectral_id] = nn.Parameter(set_requires_grad(normals2_sub, False))
+    #     self._roughness[spectral_id] = nn.Parameter(set_requires_grad(roughness_sub, False))
+    #     self._specular[spectral_id] = nn.Parameter(set_requires_grad(specular_sub, False))
+
+    # def inpaint_setup(self, training_args, mask3d, spectral_id):
+
+    #     def initialize_new_features(features, num_new_points, mask_xyz_values, distance_threshold=0.25, max_distance_threshold=1, k=5):
+    #         """Initialize new points for multiple features based on neighbouring points in the remaining area."""
+    #         new_features = {}
+            
+    #         if num_new_points == 0:
+    #             for key in features:
+    #                 new_features[key] = torch.empty((0, *features[key].shape[1:]), device=features[key].device)
+    #             return new_features
+
+    #         # Get remaining points from features
+    #         remaining_xyz_values = features["xyz"]
+    #         remaining_xyz_values_np = remaining_xyz_values.cpu().numpy()
+            
+    #         # Build a KD-Tree for fast nearest-neighbor lookup
+    #         kdtree = KDTree(remaining_xyz_values_np)
+            
+    #         # Sample random points from mask_xyz_values as query points
+    #         mask_xyz_values_np = mask_xyz_values.cpu().numpy()
+    #         query_points = mask_xyz_values_np
+
+    #         # Find the k nearest neighbors in the remaining points for each query point
+    #         distances, indices = kdtree.query(query_points, k=k)
+    #         selected_indices = indices
+
+    #         # Initialize new points for each feature
+    #         for key, feature in features.items():
+    #             # Convert feature to numpy array
+    #             feature_np = feature.cpu().numpy()
+                
+    #             # If we have valid neighbors, calculate the mean of neighbor points
+    #             if feature_np.ndim == 2:
+    #                 neighbor_points = feature_np[selected_indices]
+    #             elif feature_np.ndim == 3:
+    #                 neighbor_points = feature_np[selected_indices, :, :]
+    #             else:
+    #                 raise ValueError(f"Unsupported feature dimension: {feature_np.ndim}")
+    #             new_points_np = np.mean(neighbor_points, axis=1)
+                
+    #             # Convert back to tensor
+    #             new_features[key] = torch.tensor(new_points_np, device=feature.device, dtype=feature.dtype)
+            
+    #         return new_features['xyz'], new_features['features_dc_'+str(spectral_id)], new_features['scaling'], new_features['objects_dc_'+str(spectral_id)], new_features['features_rest_'+str(spectral_id)], new_features['opacity'], new_features['rotation'],new_features['roughness_'+str(spectral_id)],new_features['specular_'+str(spectral_id)],new_features['normal_'+str(spectral_id)],new_features['normal2_'+str(spectral_id)]
+        
+    #     mask3d = ~mask3d.bool().squeeze()
+    #     mask_xyz_values = self._xyz[~mask3d]
+
+    #     # Extracting subsets using the mask
+    #     xyz_sub = self._xyz[mask3d].detach()
+    #     features_dc_sub = self._features_dc[spectral_id][mask3d].detach()
+    #     features_rest_sub = self._features_rest[spectral_id][mask3d].detach()
+    #     opacity_sub = self._opacity[mask3d].detach()
+    #     scaling_sub = self._scaling[mask3d].detach()
+    #     rotation_sub = self._rotation[mask3d].detach()
+    #     objects_dc_sub = self._objects_dc[spectral_id][mask3d].detach()
+    #     normals_sub = self._normal[spectral_id][mask3d].detach()
+    #     normals2_sub = self._normal2[spectral_id][mask3d].detach()
+    #     roughness_sub = self._roughness[spectral_id][mask3d].detach()
+    #     specular_sub = self._specular[spectral_id][mask3d].detach()
+        
+    #     # Add new points with random initialization
+    #     sub_features = {
+    #         'xyz': xyz_sub,
+    #         'features_dc_'+str(spectral_id): features_dc_sub,
+    #         'scaling': scaling_sub,
+    #         'objects_dc_'+str(spectral_id): objects_dc_sub,
+    #         'features_rest_'+str(spectral_id): features_rest_sub,
+    #         'opacity': opacity_sub,
+    #         'rotation': rotation_sub,
+    #         'roughness_'+str(spectral_id):roughness_sub,
+    #         'specular_'+str(spectral_id):specular_sub,
+    #         'normal_'+str(spectral_id):normals_sub,
+    #         'normal2_'+str(spectral_id):normals2_sub
+    #     }
+
+    #     num_new_points = len(mask_xyz_values)
+    #     with torch.no_grad():
+    #         new_xyz, new_features_dc, new_scaling, new_objects_dc, new_features_rest, new_opacity, new_rotation, new_roughness, new_specular, new_normal, new_normal2 = initialize_new_features(sub_features, num_new_points, mask_xyz_values)
+
+    #     def set_requires_grad(tensor, requires_grad):
+    #         """Returns a new tensor with the specified requires_grad setting."""
+    #         return tensor.detach().clone().requires_grad_(requires_grad)
+
+    #     # Construct nn.Parameters with specified gradients
+    #     self._xyz = nn.Parameter(torch.cat([set_requires_grad(xyz_sub, False), set_requires_grad(new_xyz, True)]))
+    #     self._features_dc[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(features_dc_sub, False), set_requires_grad(new_features_dc, True)]))
+    #     self._features_rest[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(features_rest_sub, False), set_requires_grad(new_features_rest, True)]))
+    #     self._opacity = nn.Parameter(torch.cat([set_requires_grad(opacity_sub, False), set_requires_grad(new_opacity, True)]))
+    #     self._scaling = nn.Parameter(torch.cat([set_requires_grad(scaling_sub, False), set_requires_grad(new_scaling, True)]))
+    #     self._rotation = nn.Parameter(torch.cat([set_requires_grad(rotation_sub, False), set_requires_grad(new_rotation, True)]))
+    #     self._objects_dc[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(objects_dc_sub, False), set_requires_grad(new_objects_dc, True)]))
+    #     self._roughness[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(roughness_sub, False), set_requires_grad(new_roughness, True)]))
+    #     self._specular[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(specular_sub, False), set_requires_grad(new_specular, True)]))
+    #     self._normal[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(normals_sub, False), set_requires_grad(new_normal, True)]))
+    #     self._normal2[spectral_id] = nn.Parameter(torch.cat([set_requires_grad(normals2_sub, False), set_requires_grad(new_normal2, True)]))
+
+    #     # for optimize
+    #     self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+    #     self.percent_dense = training_args.percent_dense
+    #     self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+    #     self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+    #     # Setup optimizer. Only the new points will have gradients.
+    #     l = [
+    #         {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+    #         {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
+    #         {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+    #         {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+    #     ]
+
+    #     l.extend([  {'params': [self._features_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "f_dc_"+ str(spectral_id)},
+    #                 {'params': [self._features_rest[spectral_id]], 'lr': training_args.feature_lr / 20.0, "name": "f_rest_" + str(spectral_id)},
+    #                 {'params': [self._roughness[spectral_id]], 'lr': training_args.roughness_lr, "name": "roughness_" + str(spectral_id)},
+    #                 {'params': [self._specular[spectral_id]], 'lr': training_args.specular_lr, "name": "specular_" + str(spectral_id)},
+    #                 {'params': [self._normal[spectral_id]], 'lr': training_args.normal_lr, "name": "normal_" + str(spectral_id)},
+    #                 {'params': [self._normal2[spectral_id]], 'lr': training_args.normal_lr, "name": "normal2_" + str(spectral_id)},
+    #                 {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
+    #             ])
+
+    #     self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
