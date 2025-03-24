@@ -12,6 +12,7 @@
 import os
 import random
 import json
+import torch
 from utils.system_utils import searchForMaxIteration, searchForMaxSpectra
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
@@ -24,13 +25,16 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
-        """b
-        :param path: Path to colmap scene main folder.
-        """
+    def __init__(
+        self, 
+        args : ModelParams, 
+        load_iteration=None, 
+        shuffle=True, 
+        resolution_scales=[1.0]
+    ):
+        # Initialize parameters
         self.model_path = args.model_path
         self.loaded_iter = None
-        self.gaussians = gaussians
 
         if load_iteration:
             if load_iteration == -1:
@@ -42,6 +46,7 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
+        # Read scene info
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, args.object_path, n_views=args.n_views, random_init=args.random_init, train_split=args.train_split,white_background=args.white_background, rgba=args.transparentbg)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
@@ -62,21 +67,7 @@ class Scene:
             )
         else:
             assert False, "Could not recognize scene type!"
-
-        # No pre-trained model --> read e.g. sparse/0/points3D.ply file
-        if not self.loaded_iter:
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-                dest_file.write(src_file.read())
-            json_cams = []
-            camlist = []
-            if scene_info.test_cameras:
-                camlist.extend(scene_info.test_cameras)
-            if scene_info.train_cameras:
-                camlist.extend(scene_info.train_cameras)
-            for id, cam in enumerate(camlist):
-                json_cams.append(camera_to_JSON(id, cam))
-            with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
-                json.dump(json_cams, file)
+        self.scene_info = scene_info
 
         if shuffle:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
@@ -85,11 +76,44 @@ class Scene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
         # self.gaussians.spectral_ids = scene_info.spectral_ids
 
+        # Load cameras
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
+
+        # Set up CT parameters
+        self.vol_gt = scene_info.vol
+        self.scanner_cfg = scene_info.scanner_cfg
+        self.scene_scale = scene_info.scene_scale
+        self.bbox = torch.stack(
+            [
+                torch.tensor(self.scanner_cfg["offOrigin"])
+                - torch.tensor(self.scanner_cfg["sVoxel"]) / 2,
+                torch.tensor(self.scanner_cfg["offOrigin"])
+                + torch.tensor(self.scanner_cfg["sVoxel"]) / 2,
+            ],
+            dim=0,
+        )
+
+    def init_gaussians(self, gaussians : GaussianModel):
+        self.gaussians = gaussians
+
+        # No pre-trained model --> read e.g. sparse/0/points3D.ply file
+        if not self.loaded_iter:
+            with open(self.scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+                dest_file.write(src_file.read())
+            json_cams = []
+            camlist = []
+            if self.scene_info.test_cameras:
+                camlist.extend(self.scene_info.test_cameras)
+            if self.scene_info.train_cameras:
+                camlist.extend(self.scene_info.train_cameras)
+            for id, cam in enumerate(camlist):
+                json_cams.append(camera_to_JSON(id, cam))
+            with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
+                json.dump(json_cams, file)
 
         # Load pre-trained model
         if self.loaded_iter:
@@ -116,7 +140,7 @@ class Scene:
                                                             "point_cloud.ply"))
 
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            self.gaussians.create_from_pcd(self.scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         for spectral_id in self.gaussians.spectral_ids:

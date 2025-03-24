@@ -22,12 +22,54 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import wandb
 import json
 import torchvision
+import numpy as np
+# from scene.gaussian import render, query
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, use_wandb, n_spectra, use_warm_up_iteration):
+
+def training(
+    dataset: ModelParams, 
+    opt: OptimizationParams, 
+    pipe: PipelineParams, 
+    testing_iterations, 
+    saving_iterations, 
+    checkpoint_iterations, 
+    checkpoint, 
+    debug_from, 
+    use_wandb, 
+    n_spectra, 
+    use_warm_up_iteration
+):
     first_iter = 0
     prepare_output_and_logger(dataset)
+
+    # Initialize Scene according to R2-Gaussian (Initialize CT parameters)
+    scene = Scene(dataset)
+
+    # Set up CT parameters
+    scanner_cfg = scene.scanner_cfg
+    bbox = scene.bbox
+    volume_to_world = max(scanner_cfg["sVoxel"])
+    max_scale = opt.max_scale * volume_to_world if opt.max_scale else None
+    densify_scale_threshold = (
+        opt.densify_scale_threshold * volume_to_world
+        if opt.densify_scale_threshold
+        else None
+    )
+    scale_bound = None
+    if dataset.scale_min > 0 and dataset.scale_max > 0:
+        scale_bound = np.array([dataset.scale_min, dataset.scale_max]) * volume_to_world
+    # queryfunc = lambda x: query(
+    #     x,
+    #     scanner_cfg["offOrigin"],
+    #     scanner_cfg["nVoxel"],
+    #     scanner_cfg["sVoxel"],
+    #     pipe,
+    # )
+
     gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res, n_spectra)
-    scene = Scene(dataset, gaussians)
+    
+    scene.init_gaussians(gaussians)
+    
     gaussians.training_setup(opt)
     
     # TEMP: removed segmentation

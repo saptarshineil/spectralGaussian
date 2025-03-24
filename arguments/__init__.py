@@ -61,6 +61,11 @@ class ModelParams(ParamGroup):
         self.brdf_dim = 0
         self.brdf_mode = "envmap"
         self.brdf_envmap_res = 64
+
+        # -- CT --
+        self.scale_min = 0.0005  # percent of volume size
+        self.scale_max = 0.5  # percent of volume size
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -123,6 +128,11 @@ class OptimizationParams(ParamGroup):
         self.lambda_predicted_normal = 2e-1
         self.lambda_delta_reg = 1e-3
         self.fix_brdf_lr = 0
+
+        # -- CT --
+        self.densify_scale_threshold = 0.1  # percent of volume size
+        self.max_scale = None  # percent of volume size
+        self.max_num_gaussians = 500_000
 
         super().__init__(parser, "Optimization Parameters")
 
