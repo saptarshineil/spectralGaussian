@@ -408,7 +408,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", spectr
     return scene_info
 
 
-def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, train_split=None, llffhold=8, n_views=100, white_background=False, rgba=False):
+def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, uniform_init = False, train_split=None, llffhold=8, n_views=100, white_background=False, rgba=False):
     """Read blender format CT data."""
     print("reading CT dataset")
 
@@ -513,6 +513,9 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
 
     # Point cloud and ply_path
     if random_init:
+        raise NotImplementedError('')
+    
+    elif uniform_init:
         raise NotImplementedError('')
 
     else:

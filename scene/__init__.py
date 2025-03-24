@@ -55,8 +55,9 @@ class Scene:
                 args.images,
                 args.eval,
                 random_init = args.random_init,
+                uniform_init = args.uniform_init,
                 train_split = args.train_split,
-                white_background = args._white_background,
+                white_background = args.white_background,
                 rgba=args.transparentbg
             )
         else:
