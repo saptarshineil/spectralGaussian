@@ -608,33 +608,77 @@ class GaussianModel:
         return optimizable_tensors
     
     # ------------------ Densification / Pruning ------------------
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, only_active_spectra=False):
+    def densify_and_prune(self, 
+        max_grad, 
+        min_opacity, 
+        extent, 
+        max_screen_size,
+        max_scale,
+        max_num_gaussians,
+        opacity_scale_threshold,
+        bbox=None,
+        only_active_spectra=False
+    ):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent, only_active_spectra=only_active_spectra)
-        self.densify_and_split(grads, max_grad, extent, only_active_spectra=only_active_spectra)
+        # -- R2-Gaussian --
+        # Densify Gaussians if Gaussians are fewer than threshold
+        if opacity_scale_threshold:
+            if not max_num_gaussians or (
+                max_num_gaussians and grads.shape[0] < max_num_gaussians
+            ):
+                self.densify_and_clone(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
+                self.densify_and_split(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
 
+        # -- R2-Gaussian --
+        # Prune gaussians with too small density
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+        
+        # Prune gaussians outside the bbox
+        if bbox is not None:
+            xyz = self.get_xyz
+            prune_mask_xyz = (
+                (xyz[:, 0] < bbox[0, 0])
+                | (xyz[:, 0] > bbox[1, 0])
+                | (xyz[:, 1] < bbox[0, 1])
+                | (xyz[:, 1] > bbox[1, 1])
+                | (xyz[:, 2] < bbox[0, 2])
+                | (xyz[:, 2] > bbox[1, 2])
+            )
+            prune_mask = prune_mask | prune_mask_xyz
+
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
-            prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+            prune_mask = torch.logical_or(prune_mask, big_points_vs)
+        if max_scale:
+            big_points_ws = self.get_scaling.max(dim=1).values > max_scale
+            prune_mask = torch.logical_or(prune_mask, big_points_ws)
         self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
 
         torch.cuda.empty_cache()
 
-    def densify_and_clone(self, grads, grad_threshold, scene_extent, only_active_spectra):
+    def densify_and_clone(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra):
         # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
+        selected_pts_mask = torch.where(
+            torch.norm(grads, dim=-1) >= grad_threshold, True, False
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values <= densify_scale_threshold
+        )
         
         new_xyz = self._xyz[selected_pts_mask]
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
-        self.densification_postfix(new_xyz,new_opacities, new_scaling, new_rotation)
+        new_max_radii2D = self.max_radii2D[selected_pts_mask]
+        self.densification_postfix(new_xyz,new_opacities, new_scaling, new_rotation, new_max_radii2D)
+        
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
             new_features_dc = self._features_dc[spectral_id][selected_pts_mask]
@@ -646,24 +690,33 @@ class GaussianModel:
             new_normal2 = self._normal2[spectral_id][selected_pts_mask] if (self.brdf) else None
             self.densification_postfix_per_spectra(new_features_dc, new_features_rest, new_objects_dc,  new_roughness, new_specular, new_normal, new_normal2, spectral_id)
 
-    def densify_and_split(self, grads, grad_threshold, scene_extent, only_active_spectra, N=2):
+    def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > densify_scale_threshold,
+        )
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
         samples = torch.normal(mean=means, std=stds)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
+        
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
-        self.densification_postfix(new_xyz,new_opacity, new_scaling, new_rotation)
+        new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
+        self.densification_postfix(new_xyz,new_opacity, new_scaling, new_rotation, new_max_radii2D)
+        
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
             new_features_dc = self._features_dc[spectral_id][selected_pts_mask].repeat(N,1,1) if not self.brdf else self._features_dc[spectral_id][selected_pts_mask].repeat(N,1)
@@ -675,7 +728,12 @@ class GaussianModel:
             new_normal2 = self._normal2[spectral_id][selected_pts_mask].repeat(N,1) if (self.brdf) else None
             self.densification_postfix_per_spectra(new_features_dc, new_features_rest, new_objects_dc, new_roughness, new_specular, new_normal, new_normal2, spectral_id)
 
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        prune_filter = torch.cat(
+            (
+                selected_pts_mask,
+                torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool),
+            )
+        )
         self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
     def densification_postfix_per_spectra(self, new_features_dc, new_features_rest,new_objects_dc,  new_roughness, new_specular, new_normal, new_normal2, spectral_id):
@@ -700,7 +758,7 @@ class GaussianModel:
             self._normal[spectral_id] = optimizable_tensors["normal_"+ str(spectral_id)]
             self._normal2[spectral_id] = optimizable_tensors["normal2_"+ str(spectral_id)]
 
-    def densification_postfix(self, new_xyz, new_opacities, new_scaling, new_rotation):
+    def densification_postfix(self, new_xyz, new_opacities, new_scaling, new_rotation, new_max_radii2D):
         d = {"xyz": new_xyz,
         "opacity": new_opacities,
         "scaling" : new_scaling,
@@ -713,7 +771,7 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.max_radii2D = torch.cat([self.max_radii2D, new_max_radii2D], dim=-1)
 
     def prune_points(self, mask, only_active_spectra):
         valid_points_mask = ~mask
@@ -723,6 +781,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
             self._features_dc[spectral_id] = optimizable_tensors["f_dc_"+str(spectral_id)]
@@ -744,10 +803,7 @@ class GaussianModel:
         for group in self.optimizer.param_groups:
             if group["name"].startswith("brdf_mlp"):
                 continue
-            # elif group["name"][-1].isdigit():
-            #     key = group["name"]
-            #     if int(key[key.rindex("_") + 1:]) != spectral_id:
-            #         continue
+
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]

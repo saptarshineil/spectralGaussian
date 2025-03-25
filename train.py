@@ -254,42 +254,45 @@ def training(
                 # TEMP: removed segmentation
                 # torch.save(classifier.state_dict(), os.path.join(scene.model_path, "point_cloud/iteration_{}_{}".format(iteration, spectral_id),'classifier.pth'))
 
-            # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+            # # Densification
+            # if iteration < opt.densify_until_iter:
+            #     # Keep track of max radii in image-space for pruning
+            #     gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+            #     gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            #     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+            #         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+            #         gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
+            #     if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            #         gaussians.reset_opacity()
 
             # R2-Gaussian uses adaptive control instead of densification
-            # # Adaptive control
-            # gaussians.max_radii2D[visibility_filter] = torch.max(
-            #     gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
-            # )
-            # gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-            # if iteration < opt.densify_until_iter:
-            #     if (
-            #         iteration > opt.densify_from_iter
-            #         and iteration % opt.densification_interval == 0
-            #     ):
-            #         gaussians.densify_and_prune(
-            #             opt.densify_grad_threshold,
-            #             opt.density_min_threshold,
-            #             opt.max_screen_size,
-            #             max_scale,
-            #             opt.max_num_gaussians,
-            #             densify_scale_threshold,
-            #             bbox,
-            #         )
-            # if gaussians.get_density.shape[0] == 0:
-            #     raise ValueError(
-            #         "No Gaussian left. Change adaptive control hyperparameters!"
-            #     )
+            # Adaptive control
+            gaussians.max_radii2D[visibility_filter] = torch.max(
+                gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
+            )
+            gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            if iteration < opt.densify_until_iter:
+                if (
+                    iteration > opt.densify_from_iter
+                    and iteration % opt.densification_interval == 0
+                ):
+                    gaussians.densify_and_prune(
+                        opt.densify_grad_threshold,
+                        opt.density_min_threshold,
+                        scene.cameras_extent,
+                        opt.max_screen_size,
+                        max_scale,
+                        opt.max_num_gaussians,
+                        densify_scale_threshold,
+                        bbox,
+                    )
+            if gaussians.get_opacity.shape[0] == 0:
+                raise ValueError(
+                    "No Gaussian left. Change adaptive control hyperparameters!"
+                )
+            # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            #     gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:

@@ -134,8 +134,10 @@ class OptimizationParams(ParamGroup):
         self.tv_vol_size = 32
 
         self.densify_scale_threshold = 0.1  # percent of volume size
+        self.density_min_threshold = 0.00001
         self.max_scale = None  # percent of volume size
         self.max_num_gaussians = 500_000
+        self.max_screen_size = None
 
         super().__init__(parser, "Optimization Parameters")
 
