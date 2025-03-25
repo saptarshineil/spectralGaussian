@@ -23,7 +23,7 @@ import wandb
 import json
 import torchvision
 import numpy as np
-from gaussian_renderer.render_query import render, query
+from gaussian_renderer.render_query import query # , render
 
 
 def training(
@@ -113,46 +113,54 @@ def training(
     # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
         iter_start.record()
+
+        # Every 1000 its we increase the levels of SH up to a maximum degree
+        if iteration % 1000 == 0:
+            gaussians.oneupSHdegree()
+            # if combine_spectra:
+            #     gaussians.average_params_full_spectra()
+
+        # Debug
+        if (iteration - 1) == debug_from:
+                pipe.debug = True
+
+        # Get one camera for training
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        total_loss = 0
-        total_l1_loss = 0
         
+        # Track losses
+        total_loss = 0
+        # total_l1_loss = 0
+        
+        # Compute loss per spectrum
         for spectral_id in spectral_ids:
-
-            # Network GUI     
-            if network_gui.conn == None:
-                network_gui.try_connect()
-            while network_gui.conn != None:
-                try:
-                    net_image_bytes = None
-                    custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-                    if custom_cam != None:
-                        net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer, spectral_id=spectral_id)["render"]
-                        net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                    network_gui.send(net_image_bytes, dataset.source_path)
-                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                        break
-                except Exception as e:
-                    network_gui.conn = None
-
-            # Every 1000 its we increase the levels of SH up to a maximum degree
-            if iteration % 1000 == 0:
-                gaussians.oneupSHdegree()
-                # if combine_spectra:
-                #     gaussians.average_params_full_spectra()
-
+            
             # Update active spectrum
             gaussians.activate_spectra(spectral_id, iteration >= opt.normal_reg_from_iter)
 
             # ---------- Loss ----------
             # Render
-            if (iteration - 1) == debug_from:
-                pipe.debug = True
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background,spectral_id=spectral_id)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, background, spectral_id=spectral_id)
+            image, viewspace_point_tensor, visibility_filter, radii, objects = (
+                render_pkg["render_"+str(spectral_id)], 
+                render_pkg["viewspace_points"], 
+                render_pkg["visibility_filter"], 
+                render_pkg["radii"], 
+                render_pkg["render_object"],
+            )
+
+            # R2-Gaussian
+            # # Render X-ray projection
+            # render_pkg = render(viewpoint_cam, gaussians, pipe)
+            # image, viewspace_point_tensor, visibility_filter, radii = (
+            #     render_pkg["render"],
+            #     render_pkg["viewspace_points"],
+            #     render_pkg["visibility_filter"],
+            #     render_pkg["radii"],
+            # )
+            
             losses_extra = {}        
-            image, viewspace_point_tensor, visibility_filter, radii, objects = render_pkg["render_"+str(spectral_id)], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["render_object"]
             if pipe.brdf and iteration > opt.normal_reg_from_iter:
                 if iteration<opt.normal_reg_util_iter:
                     losses_extra['predicted_normal_'+str(spectral_id)] = predicted_normal_loss(render_pkg["normal_"+str(spectral_id)], render_pkg["normal_ref_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
@@ -164,9 +172,10 @@ def training(
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
             Ll1 = l1_loss(image, gt_image)
-            total_l1_loss = total_l1_loss + Ll1.item()
-            # if iteration > 100 :
-            # torchvision.utils.save_image(image, "img_"+ str(spectral_id) + ".png")
+            # total_l1_loss = total_l1_loss + Ll1.item()
+
+            # DSSIM Loss
+            dssim = (1.0 - ssim(image, gt_image))
 
             # TEMP: removed segmentation
             # 2D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
@@ -186,10 +195,26 @@ def training(
                 # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj + loss_obj_3d
             # else:
                 # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj
-            
-            # TEMP: removed segmentation
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
+            # R2-Gaussian
+            # # 3D TV loss
+            # if use_tv:
+            #     # Randomly get the tiny volume center
+            #     tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
+            #         bbox[1] - tv_vol_sVoxel - bbox[0]
+            #     ) * torch.rand(3)
+            #     vol_pred = query(
+            #         gaussians,
+            #         tv_vol_center,
+            #         tv_vol_nVoxel,
+            #         tv_vol_sVoxel,
+            #         pipe,
+            #     )["ct"]
+            #     loss_tv = tv_3d_loss(vol_pred, reduction="mean")
+            
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * dssim
+
+            # Loss backward
             for k in losses_extra.keys():
                 key = k[:k.rfind('_')]
                 loss += getattr(opt, f'lambda_{key}')* losses_extra[k]
@@ -198,8 +223,10 @@ def training(
 
             # torch.cuda.empty_cache()
         iter_end.record()
+        
         with torch.no_grad():
             torch.cuda.empty_cache()
+            
             # Progress bar
             ema_loss_for_log = 0.4 * total_loss + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
@@ -208,11 +235,11 @@ def training(
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            losses_extra['psnr'] = psnr(image, gt_image).mean()
             # Log and save
             #todo : implement evaluation. Important for Evaluation
             # training_report(iteration, total_l1_loss, total_loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), loss_obj_3d, use_wandb, spectral_ids)
             # todo:check the with gt objects for each spectra and save the classifier path per spectra 
+            losses_extra['psnr'] = psnr(image, gt_image).mean()
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -231,10 +258,36 @@ def training(
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
+            # R2-Gaussian uses adaptive control instead of densification
+            # # Adaptive control
+            # gaussians.max_radii2D[visibility_filter] = torch.max(
+            #     gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
+            # )
+            # gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            # if iteration < opt.densify_until_iter:
+            #     if (
+            #         iteration > opt.densify_from_iter
+            #         and iteration % opt.densification_interval == 0
+            #     ):
+            #         gaussians.densify_and_prune(
+            #             opt.densify_grad_threshold,
+            #             opt.density_min_threshold,
+            #             opt.max_screen_size,
+            #             max_scale,
+            #             opt.max_num_gaussians,
+            #             densify_scale_threshold,
+            #             bbox,
+            #         )
+            # if gaussians.get_density.shape[0] == 0:
+            #     raise ValueError(
+            #         "No Gaussian left. Change adaptive control hyperparameters!"
+            #     )
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                # TEMP: removed segmentation
                 # cls_optimizer.step()
                 # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
@@ -368,7 +421,7 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    network_gui.init(args.ip, args.port)
+    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.use_wandb, args.n_spectra, args.use_warm_up_iteration)
 

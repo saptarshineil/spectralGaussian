@@ -235,10 +235,13 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res, n_spectra)
-        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-        
-        num_classes = dataset.num_classes
-        print("Num classes: ",num_classes)
+
+        scene = Scene(dataset, load_iteration=iteration, shuffle=False)
+        scene.init_gaussians(gaussians)
+
+        # TEMP: removed segmentation
+        # num_classes = dataset.num_classes
+        # print("Num classes: ",num_classes)
 
         # TEMP: removed segmentation
         classifier = None
