@@ -52,7 +52,7 @@ def query(
     voxelizer = GaussianVoxelizer(voxel_settings=voxel_settings)
 
     means3D = pc.get_xyz
-    density = pc.get_density
+    opacity = pc.get_opacity
 
     scales = None
     rotations = None
@@ -65,7 +65,7 @@ def query(
 
     vol_pred, radii = voxelizer(
         means3D=means3D,
-        opacities=density,
+        opacities=opacity,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
@@ -128,7 +128,7 @@ def render(
 
     means3D = pc.get_xyz
     means2D = screenspace_points
-    density = pc.get_density
+    opacity = pc.get_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -145,7 +145,7 @@ def render(
     rendered_image, radii = rasterizer(
         means3D=means3D,
         means2D=means2D,
-        opacities=density,
+        opacities=opacity,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,

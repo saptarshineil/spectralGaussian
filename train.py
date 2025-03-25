@@ -9,7 +9,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
+from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -77,6 +77,14 @@ def training(
     )
     scene.init_gaussians(gaussians)
     gaussians.training_setup(opt)
+
+    # Set up 3D TV loss
+    use_tv = opt.lambda_tv > 0
+    if use_tv:
+        print("Use total variation loss")
+        tv_vol_size = opt.tv_vol_size
+        tv_vol_nVoxel = torch.tensor([tv_vol_size, tv_vol_size, tv_vol_size])
+        tv_vol_sVoxel = torch.tensor(scanner_cfg["dVoxel"]) * tv_vol_nVoxel
     
     # TEMP: removed segmentation
     # Set up segmentation
@@ -171,11 +179,13 @@ def training(
 
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
-            Ll1 = l1_loss(image, gt_image)
+            loss_l1 = l1_loss(image, gt_image)
+            loss = (1.0 - opt.lambda_dssim) * loss_l1
             # total_l1_loss = total_l1_loss + Ll1.item()
 
             # DSSIM Loss
-            dssim = (1.0 - ssim(image, gt_image))
+            loss_dssim = (1.0 - ssim(image, gt_image))
+            loss += opt.lambda_dssim * loss_dssim
 
             # TEMP: removed segmentation
             # 2D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
@@ -197,22 +207,21 @@ def training(
                 # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj
 
             # R2-Gaussian
-            # # 3D TV loss
-            # if use_tv:
-            #     # Randomly get the tiny volume center
-            #     tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
-            #         bbox[1] - tv_vol_sVoxel - bbox[0]
-            #     ) * torch.rand(3)
-            #     vol_pred = query(
-            #         gaussians,
-            #         tv_vol_center,
-            #         tv_vol_nVoxel,
-            #         tv_vol_sVoxel,
-            #         pipe,
-            #     )["ct"]
-            #     loss_tv = tv_3d_loss(vol_pred, reduction="mean")
-            
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * dssim
+            # 3D TV loss
+            if use_tv:
+                # Randomly get the tiny volume center
+                tv_vol_center = (bbox[0] + tv_vol_sVoxel / 2) + (
+                    bbox[1] - tv_vol_sVoxel - bbox[0]
+                ) * torch.rand(3)
+                vol_pred = query(
+                    gaussians,
+                    tv_vol_center,
+                    tv_vol_nVoxel,
+                    tv_vol_sVoxel,
+                    pipe,
+                )["ct"]
+                loss_tv = tv_3d_loss(vol_pred, reduction="mean")
+                loss += opt.lambda_tv * loss_tv
 
             # Loss backward
             for k in losses_extra.keys():
@@ -221,7 +230,6 @@ def training(
             total_loss += loss.item()
             loss.backward()
 
-            # torch.cuda.empty_cache()
         iter_end.record()
         
         with torch.no_grad():

@@ -466,13 +466,19 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
             train_dir = os.path.join(path, "images_train")
             train_names = sorted(os.listdir(train_dir))
             train_names = [train_name.split('.')[0] for train_name in train_names]
+            test_dir = os.path.join(path, "images_test")
+            test_names = sorted(os.listdir(test_dir))
+            test_names = [test_name.split('.')[0] for test_name in test_names]
+
             train_cam_infos = []
             test_cam_infos = []
             for cam_info in cam_infos:
                 if cam_info.image_name in train_names:
                     train_cam_infos.append(cam_info)
-                else:
+                elif cam_info.image_name in test_names:
                     test_cam_infos.append(cam_info)
+                else:
+                    continue
 
         else:
             train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]

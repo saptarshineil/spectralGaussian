@@ -40,7 +40,7 @@ class GaussianModel:
             symm = strip_symmetric(actual_covariance)
             return symm
         
-        # -- CT --
+        # -- R2-Gaussian --
         # if self.scale_bound is not None:
         #     scale_min_bound, scale_max_bound = self.scale_bound
         #     assert (
@@ -64,7 +64,7 @@ class GaussianModel:
 
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
-        # -- CT --
+        # -- R2-Gaussian --
         # self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
         # self.inverse_opacity_activation = inverse_softplus
 

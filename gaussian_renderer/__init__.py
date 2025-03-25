@@ -61,10 +61,19 @@ def normalize_normal_inplace(normal, alpha):
     normal = torch.where(fg_mask, torch.nn.functional.normalize(normal, p=2, dim=0), normal)
 
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, debug=False, speed=False, spectral_id=0):
+def render(
+    viewpoint_camera,
+    pc : GaussianModel, 
+    pipe, 
+    bg_color : torch.Tensor, 
+    scaling_modifier = 1.0, 
+    override_color = None, 
+    debug=False, 
+    speed=False, 
+    spectral_id=0
+):
     """
     Render the scene. 
-    
     Background tensor (bg_color) must be on GPU!
     """
  
@@ -76,9 +85,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         pass
 
     # Set up rasterization configuration
+    # -- Default: --
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
+    # -- R2-Gaussian: --
+    # mode = viewpoint_camera.mode
+    # if mode == 0:
+    #     tanfovx = 1.0
+    #     tanfovy = 1.0
+    # elif mode == 1:
+    #     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    #     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    # else:
+    #     raise ValueError("Unsupported mode!")
+
+    # -- Default: --
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -93,6 +115,21 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         prefiltered=False,
         debug=pipe.debug
     )
+
+    # -- R2-Gaussian: --
+    # raster_settings = GaussianRasterizationSettings(
+    #     image_height=int(viewpoint_camera.image_height),
+    #     image_width=int(viewpoint_camera.image_width),
+    #     tanfovx=tanfovx,
+    #     tanfovy=tanfovy,
+    #     scale_modifier=scaling_modifier,
+    #     viewmatrix=viewpoint_camera.world_view_transform,
+    #     projmatrix=viewpoint_camera.full_proj_transform,
+    #     campos=viewpoint_camera.camera_center,
+    #     prefiltered=False,
+    #     mode=viewpoint_camera.mode,   # added
+    #     debug=pipe.debug,
+    # )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
@@ -133,11 +170,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 view_pos = viewpoint_camera.camera_center.repeat(pc.get_opacity.shape[0], 1) # (N, 3) 
                 diffuse = pc.get_diffuse() # (N, 3) 
                 normal, delta_normal = pc.get_normal(dir_pp_normalized=dir_pp_normalized, return_delta=True) # (N, 3) 
-                # normal = 0.5 * normal + 0.5
-                # normal_zeros = torch.where(torch.norm(normal, dim=-1) == 0, True, False)
-                # val = torch.sum(normal_zeros.int()).item()
-                # if val > 0:
-                #     print("normal zeroes")
                 delta_normal_norm = delta_normal.norm(dim=1, keepdim=True)
                 specular  = pc.get_specular() # (N, 3) 
                 roughness = pc.get_roughness() # (N, 1) 
@@ -169,19 +201,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    # if override_color is None:
-    #     if pipe.convert_SHs_python:
-    #         shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
-    #         dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
-    #         dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
-    #         sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
-    #         colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
-    #     else:
-    #         shs = pc.get_features
-    #         sh_objs = pc.get_objects
-    # else:
-    #     colors_precomp = override_color
-
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii, rendered_objects = rasterizer(
         means3D = means3D,
@@ -195,6 +214,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = cov3D_precomp)
     
     out_extras.update({"render_"+str(spectral_id): rendered_image})
+    
+    # ---- Render extras ----
     if not speed:
         # Calculate Gaussians projected depth
         p_hom = torch.cat([pc.get_xyz, torch.ones_like(pc.get_xyz[...,:1])], -1).unsqueeze(-1)

@@ -130,6 +130,9 @@ class OptimizationParams(ParamGroup):
         self.fix_brdf_lr = 0
 
         # -- CT --
+        self.lambda_tv = 0.05
+        self.tv_vol_size = 32
+
         self.densify_scale_threshold = 0.1  # percent of volume size
         self.max_scale = None  # percent of volume size
         self.max_num_gaussians = 500_000
