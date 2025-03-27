@@ -16,18 +16,35 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, fov2focal,
 from scipy.spatial.transform import Rotation as R
 
 class Camera(nn.Module):
-    def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
-                 image_name, uid,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", objects=None, style_transfer=False,spectral_images=None
-                 ):
+    def __init__(self, 
+        colmap_id, 
+        R, 
+        T, 
+        angle,                              # R2-gaussian
+        mode,                               # R2-gaussian
+        FoVx, 
+        FoVy, 
+        image, 
+        gt_alpha_mask,                      # spectral
+        image_name, 
+        uid,
+        trans=np.array([0.0, 0.0, 0.0]), 
+        scale=1.0, 
+        data_device = "cuda", 
+        objects=None,                       # spectral
+        style_transfer=False,               # spectral
+        spectral_images=None                # spectral
+):
         super(Camera, self).__init__()
 
         self.uid = uid
         self.colmap_id = colmap_id
         self.R = R
         self.T = T
+        self.angle = angle
         self.FoVx = FoVx
         self.FoVy = FoVy
+        self.mode = mode
         self.image_name = image_name
 
         try:

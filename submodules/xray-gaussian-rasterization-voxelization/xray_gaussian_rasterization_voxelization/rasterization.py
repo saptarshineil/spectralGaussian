@@ -197,7 +197,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
 
 # Change according to line 45 gaussian_renderer/__init__.py
-class GaussianRasterizationSettings(NamedTuple):
+class GaussianRasterizationSettings_ct(NamedTuple):
     image_height: int
     image_width: int
     tanfovx: float
@@ -211,7 +211,7 @@ class GaussianRasterizationSettings(NamedTuple):
     debug: bool
 
 
-class GaussianRasterizer(nn.Module):
+class GaussianRasterizer_ct(nn.Module):
     def __init__(self, raster_settings):
         super().__init__()
         self.raster_settings = raster_settings

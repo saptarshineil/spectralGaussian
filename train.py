@@ -23,7 +23,7 @@ import wandb
 import json
 import torchvision
 import numpy as np
-from gaussian_renderer.render_query import query # , render
+from gaussian_renderer.render_query import query #, render
 
 
 def training(
@@ -122,6 +122,8 @@ def training(
     for iteration in range(first_iter, opt.iterations + 1):   
         iter_start.record()
 
+        # gaussians.update_learning_rate(iteration)
+
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
@@ -159,7 +161,7 @@ def training(
             )
 
             # R2-Gaussian
-            # # Render X-ray projection
+            # Render X-ray projection
             # render_pkg = render(viewpoint_cam, gaussians, pipe)
             # image, viewspace_point_tensor, visibility_filter, radii = (
             #     render_pkg["render"],
@@ -291,8 +293,8 @@ def training(
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
-            # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-            #     gaussians.reset_opacity()
+            if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:

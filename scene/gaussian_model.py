@@ -21,7 +21,7 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation, get_min
 from scipy.spatial import KDTree
 from scene.NVDIFFREC import create_trainable_env_rnd
 import open3d as o3d
-# from utils.gaussian_utils import (
+from utils.gaussian_utils import inverse_softplus
 #     inverse_sigmoid,
 #     get_expon_lr_func,
 #     build_rotation,
@@ -40,6 +40,17 @@ class GaussianModel:
             symm = strip_symmetric(actual_covariance)
             return symm
         
+        # -- Spectral --
+        self.scaling_activation = torch.exp
+        self.scaling_inverse_activation = torch.log
+
+        self.covariance_activation = build_covariance_from_scaling_rotation
+
+        self.opacity_activation = torch.sigmoid
+        self.opacity_inverse_activation = inverse_sigmoid
+        
+        self.rotation_activation = torch.nn.functional.normalize
+        
         # -- R2-Gaussian --
         # if self.scale_bound is not None:
         #     scale_min_bound, scale_max_bound = self.scale_bound
@@ -57,18 +68,12 @@ class GaussianModel:
         #     self.scaling_activation = torch.exp
         #     self.scaling_inverse_activation = torch.log
 
-        self.scaling_activation = torch.exp
-        self.scaling_inverse_activation = torch.log
+        # self.covariance_activation = build_covariance_from_scaling_rotation
 
-        self.covariance_activation = build_covariance_from_scaling_rotation
-
-        self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
-        # -- R2-Gaussian --
         # self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
-        # self.inverse_opacity_activation = inverse_softplus
+        # self.opacity_inverse_activation = inverse_softplus
 
-        self.rotation_activation = torch.nn.functional.normalize
+        # self.rotation_activation = torch.nn.functional.normalize
 
     def __init__(self, sh_degree : int, brdf_dim : int, brdf_mode : str, brdf_envmap_res: int, n_spectra : int, scale_bound=None):
 
@@ -120,9 +125,10 @@ class GaussianModel:
         self.roughness_bias = 0.
         self.default_roughness = 0.6
 
-        # -- CT attributes --
+        # -- R2-Gaussians attributes --
         self.scale_bound = scale_bound
 
+        # Init activation functions
         self.setup_functions()
 
     def set_requires_grad(self, tensor, requires_grad):
@@ -147,97 +153,7 @@ class GaussianModel:
             self.scale_bound,      # CT
         )
     
-    # Spectral 
-    def create_brdf_mlps(self):
-        self.brdf_mlp = []
-        for spectral_id in self.spectral_ids:
-            self.brdf_mlp.append(create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8))
-
-    # Spectral    
-    def get_normal(self, dir_pp_normalized=None, return_delta=False):
-        normal_axis = self.get_minimum_axis
-        normal_axis = normal_axis
-        normal_axis, positive = flip_align_view(normal_axis, dir_pp_normalized)
-        delta_normal1 = self._normal[self.active_spectra]  # (N, 3) 
-        delta_normal2 = self._normal2[self.active_spectra] # (N, 3) 
-        delta_normal = torch.stack([delta_normal1, delta_normal2], dim=-1) # (N, 3, 2)
-        idx = torch.where(positive, 0, 1).long()[:,None,:].repeat(1, 3, 1) # (N, 3, 1)
-        delta_normal = torch.gather(delta_normal, index=idx, dim=-1).squeeze(-1) # (N, 3)
-        normal = delta_normal + normal_axis 
-        normal = normal/normal.norm(dim=1, keepdim=True) # (N, 3)
-        if return_delta:
-            return normal, delta_normal
-        else:
-            return normal
-    
-    # Spectral
-    def get_diffuse(self):
-        return self._features_dc[self.active_spectra]
-    
-    # Spectral
-    def get_specular(self):
-        return self.specular_activation(self._specular[self.active_spectra])
-    
-    # Spectral
-    def get_roughness(self):
-        return self.roughness_activation(self._roughness[self.active_spectra] + self.roughness_bias)
-
-    # Spectral
-    def get_brdf_features(self):
-        return self._features_rest[self.active_spectra]
-    
-    # Spectral
-    def average_params_full_spectra(self):
-        self.set_grad_params(self.active_spectra, False, False)
-        self._normal[0] = torch.stack(self._normal[1:]).mean(dim=0)
-        self._normal2[0] = torch.stack(self._normal2[1:]).mean(dim=0)
-        # self._features_dc[0] = torch.stack(self._features_dc[1:]).mean(dim=0)
-        # self._specular[0] = torch.stack(self._specular[1:]).mean(dim=0)
-        self._roughness[0] = torch.stack(self._roughness[1:]).mean(dim=0)
-
-    # Spectral
-    @property
-    def get_minimum_axis(self):
-        return get_minimum_axis(self.get_scaling, self.get_rotation)
-    
-    # Spectral
-    def get_features(self):
-        features_dc = self._features_dc[self.active_spectra]
-        features_rest = self._features_rest[self.active_spectra]
-        return torch.cat((features_dc, features_rest), dim=1)
-   
-    # Spectral
-    def get_objects(self):
-        return self._objects_dc[self.active_spectra]
-    
-    # Spectral
-    def oneupSHdegree(self):
-        if self.active_sh_degree < self.max_sh_degree:
-            self.active_sh_degree += 1
-
-    # Spectral
-    def set_grad_params(self, spectral_id, state, normal_state):
-        self.set_requires_grad(self.brdf_mlp[spectral_id].base, state)
-        self.set_requires_grad(self.brdf_mlp[spectral_id].env_base, state)
-        self.set_requires_grad(self._normal[spectral_id], normal_state)
-        self.set_requires_grad(self._normal2[spectral_id], normal_state)
-        self.set_requires_grad(self._roughness[spectral_id], state)
-        self.set_requires_grad(self._specular[spectral_id], state)
-        self.set_requires_grad(self._features_dc[spectral_id], state)
-        self.set_requires_grad(self._features_rest[spectral_id], state)
-        self.set_requires_grad(self._objects_dc[spectral_id], state)
-
-    # Spectral
-    def activate_spectra(self, active_spectral_id, set_grad_normals):
-        if self.brdf:
-            self.active_spectra =  active_spectral_id
-            self.set_grad_params(self.active_spectra, True, set_grad_normals)
-            if self.brdf_mode=="envmap":
-                    self.brdf_mlp[self.active_spectra].build_mips()
-            for spectral_id in list(self.spectral_ids):
-                if spectral_id != self.active_spectra:
-                    self.set_grad_params(spectral_id, False, False)
-
+    # ------------------ General Gaussian functions ------------------
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
@@ -256,6 +172,85 @@ class GaussianModel:
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+    
+    # ------------------ Spectral Gaussian functions ------------------
+    def create_brdf_mlps(self):
+        self.brdf_mlp = []
+        for spectral_id in self.spectral_ids:
+            self.brdf_mlp.append(create_trainable_env_rnd(self.brdf_envmap_res, scale=0.0, bias=0.8))
+
+    def get_normal(self, dir_pp_normalized=None, return_delta=False):
+        normal_axis = self.get_minimum_axis
+        normal_axis = normal_axis
+        normal_axis, positive = flip_align_view(normal_axis, dir_pp_normalized)
+        delta_normal1 = self._normal[self.active_spectra]  # (N, 3) 
+        delta_normal2 = self._normal2[self.active_spectra] # (N, 3) 
+        delta_normal = torch.stack([delta_normal1, delta_normal2], dim=-1) # (N, 3, 2)
+        idx = torch.where(positive, 0, 1).long()[:,None,:].repeat(1, 3, 1) # (N, 3, 1)
+        delta_normal = torch.gather(delta_normal, index=idx, dim=-1).squeeze(-1) # (N, 3)
+        normal = delta_normal + normal_axis 
+        normal = normal/normal.norm(dim=1, keepdim=True) # (N, 3)
+        if return_delta:
+            return normal, delta_normal
+        else:
+            return normal
+    
+    def get_diffuse(self):
+        return self._features_dc[self.active_spectra]
+
+    def get_specular(self):
+        return self.specular_activation(self._specular[self.active_spectra])
+    
+    def get_roughness(self):
+        return self.roughness_activation(self._roughness[self.active_spectra] + self.roughness_bias)
+
+    def get_brdf_features(self):
+        return self._features_rest[self.active_spectra]
+    
+    def average_params_full_spectra(self):
+        self.set_grad_params(self.active_spectra, False, False)
+        self._normal[0] = torch.stack(self._normal[1:]).mean(dim=0)
+        self._normal2[0] = torch.stack(self._normal2[1:]).mean(dim=0)
+        # self._features_dc[0] = torch.stack(self._features_dc[1:]).mean(dim=0)
+        # self._specular[0] = torch.stack(self._specular[1:]).mean(dim=0)
+        self._roughness[0] = torch.stack(self._roughness[1:]).mean(dim=0)
+
+    @property
+    def get_minimum_axis(self):
+        return get_minimum_axis(self.get_scaling, self.get_rotation)
+    
+    def get_features(self):
+        features_dc = self._features_dc[self.active_spectra]
+        features_rest = self._features_rest[self.active_spectra]
+        return torch.cat((features_dc, features_rest), dim=1)
+   
+    def get_objects(self):
+        return self._objects_dc[self.active_spectra]
+    
+    def oneupSHdegree(self):
+        if self.active_sh_degree < self.max_sh_degree:
+            self.active_sh_degree += 1
+
+    def set_grad_params(self, spectral_id, state, normal_state):
+        self.set_requires_grad(self.brdf_mlp[spectral_id].base, state)
+        self.set_requires_grad(self.brdf_mlp[spectral_id].env_base, state)
+        self.set_requires_grad(self._normal[spectral_id], normal_state)
+        self.set_requires_grad(self._normal2[spectral_id], normal_state)
+        self.set_requires_grad(self._roughness[spectral_id], state)
+        self.set_requires_grad(self._specular[spectral_id], state)
+        self.set_requires_grad(self._features_dc[spectral_id], state)
+        self.set_requires_grad(self._features_rest[spectral_id], state)
+        self.set_requires_grad(self._objects_dc[spectral_id], state)
+
+    def activate_spectra(self, active_spectral_id, set_grad_normals):
+        if self.brdf:
+            self.active_spectra =  active_spectral_id
+            self.set_grad_params(self.active_spectra, True, set_grad_normals)
+            if self.brdf_mode=="envmap":
+                    self.brdf_mlp[self.active_spectra].build_mips()
+            for spectral_id in list(self.spectral_ids):
+                if spectral_id != self.active_spectra:
+                    self.set_grad_params(spectral_id, False, False)
     
     # ------------------ Initialization (loading / storing) ------------------
     def load_ply(self, path):
@@ -425,6 +420,7 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
+        # self.spatial_lr_scale = 1.0
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         if not self.brdf:
             fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -456,7 +452,7 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        opacities = self.opacity_inverse_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         
@@ -487,21 +483,52 @@ class GaussianModel:
 
     # ------------------ Training / LR ------------------  
     def training_setup(self, training_args):
-        self.fix_brdf_lr = training_args.fix_brdf_lr
-        self.percent_dense = training_args.percent_dense
+        # Init accumulators
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        # Spectral Gaussian attributes
+        self.fix_brdf_lr = training_args.fix_brdf_lr
+        self.percent_dense = training_args.percent_dense
+
+        # Define parameter list for basic Gaussian attributes
+        # -- Spectral --
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},       
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
+
+        # -- R2-Gaussian --
+        # l = [
+        #     {
+        #         "params": [self._xyz],
+        #         "lr": training_args.position_lr_init * self.spatial_lr_scale,
+        #         "name": "xyz",
+        #     },
+        #     {
+        #         "params": [self._opacity],
+        #         "lr": training_args.opacity_lr_init * self.spatial_lr_scale,
+        #         "name": "opacity",
+        #     },
+        #     {
+        #         "params": [self._scaling],
+        #         "lr": training_args.scaling_lr_init * self.spatial_lr_scale,
+        #         "name": "scaling",
+        #     },
+        #     {
+        #         "params": [self._rotation],
+        #         "lr": training_args.rotation_lr_init * self.spatial_lr_scale,
+        #         "name": "rotation",
+        #     },
+        # ]
+        
+        # Add extra spectral Gaussian attributes to parameter list
         for spectral_id in list(self.spectral_ids):
             l.extend([{'params': [self._features_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "f_dc_"+ str(spectral_id)},
             {'params': [self._features_rest[spectral_id]], 'lr': training_args.feature_lr / 20.0, "name": "f_rest_" + str(spectral_id)}])
         if self.brdf:
-            # self._normal.requires_grad_(requires_grad=False)
             self.brdf_mlp_scheduler_args = []
             for spectral_id in list(self.spectral_ids):
                 l.extend([{'params': list(self.brdf_mlp[spectral_id].parameters()), 'lr': training_args.brdf_mlp_lr_init, "name": "brdf_mlp_" + str(spectral_id)}])
@@ -515,16 +542,44 @@ class GaussianModel:
                     {'params': [self._normal[spectral_id]], 'lr': training_args.normal_lr, "name": "normal_" + str(spectral_id)},
                     {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
                 ])
-                # self._normal2.requires_grad_(requires_grad=False)
                 l.extend([
                     {'params': [self._normal2[spectral_id]], 'lr': training_args.normal_lr, "name": "normal2_" + str(spectral_id)},
                 ])
 
+        # Init Adam optimizer
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
-                                                    lr_delay_mult=training_args.position_lr_delay_mult,
-                                                    max_steps=training_args.position_lr_max_steps)
+
+        # Set up learning-rate schedulers
+        # -- Spectral --
+        self.xyz_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.position_lr_init*self.spatial_lr_scale,
+            lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+            lr_delay_mult=training_args.position_lr_delay_mult,
+            max_steps=training_args.position_lr_max_steps
+        )
+
+        # -- R2-Gaussian --
+        # self.xyz_scheduler_args = get_expon_lr_func(
+        #     lr_init=training_args.position_lr_init * self.spatial_lr_scale,
+        #     lr_final=training_args.position_lr_final * self.spatial_lr_scale,
+        #     max_steps=training_args.position_lr_max_steps,
+        # )
+        # self.opacity_scheduler_args = get_expon_lr_func(
+        #     lr_init=training_args.opacity_lr_init * self.spatial_lr_scale,
+        #     lr_final=training_args.opacity_lr_final * self.spatial_lr_scale,
+        #     max_steps=training_args.opacity_lr_max_steps,
+        # )
+        # self.scaling_scheduler_args = get_expon_lr_func(
+        #     lr_init=training_args.scaling_lr_init * self.spatial_lr_scale,
+        #     lr_final=training_args.scaling_lr_final * self.spatial_lr_scale,
+        #     max_steps=training_args.scaling_lr_max_steps,
+        # )
+        # self.rotation_scheduler_args = get_expon_lr_func(
+        #     lr_init=training_args.rotation_lr_init * self.spatial_lr_scale,
+        #     lr_final=training_args.rotation_lr_final * self.spatial_lr_scale,
+        #     max_steps=training_args.rotation_lr_max_steps,
+        # )
+        
 
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
@@ -543,7 +598,13 @@ class GaussianModel:
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
+        # Basic Gaussian
         self._update_learning_rate(iteration, "xyz")
+        # self._update_learning_rate(iteration, "opacity") # R2-Gaussian
+        # self._update_learning_rate(iteration, "scaling") # R2-Gaussian
+        # self._update_learning_rate(iteration, "rotation") # R2-Gaussian
+
+        # Spectral Gaussian
         if self.brdf and not self.fix_brdf_lr:
             parameter_list = []
             for spectral_id in self.spectral_ids:
@@ -552,7 +613,9 @@ class GaussianModel:
                 lr = self._update_learning_rate(iteration, param)
 
     def reset_opacity(self):
-        opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
+        opacities_new = self.opacity_inverse_activation(
+            torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
+        )
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 

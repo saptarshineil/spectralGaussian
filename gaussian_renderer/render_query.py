@@ -12,8 +12,8 @@ import sys
 import torch
 import math
 from xray_gaussian_rasterization_voxelization import (
-    GaussianRasterizationSettings,
-    GaussianRasterizer,
+    GaussianRasterizationSettings_ct,
+    GaussianRasterizer_ct,
     GaussianVoxelizationSettings,
     GaussianVoxelizer,
 )
@@ -110,7 +110,7 @@ def render(
     else:
         raise ValueError("Unsupported mode!")
 
-    raster_settings = GaussianRasterizationSettings(
+    raster_settings = GaussianRasterizationSettings_ct(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
@@ -124,7 +124,7 @@ def render(
         debug=pipe.debug,
     )
 
-    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    rasterizer = GaussianRasterizer_ct(raster_settings=raster_settings)
 
     means3D = pc.get_xyz
     means2D = screenspace_points

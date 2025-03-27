@@ -18,6 +18,13 @@ from utils.graphics_utils import normal_from_depth_image
 from utils.general_utils import flip_align_view
 from scene.NVDIFFREC import extract_env_map
 
+from xray_gaussian_rasterization_voxelization import (
+    GaussianRasterizationSettings_ct,
+    GaussianRasterizer_ct,
+    GaussianVoxelizationSettings,
+    GaussianVoxelizer,
+)
+
 
 def rendered_world2cam(viewpoint_cam, normal, alpha, bg_color):
     # normal: (3, H, W), alpha: (H, W), bg_color: (3)
@@ -85,11 +92,11 @@ def render(
         pass
 
     # Set up rasterization configuration
-    # -- Default: --
+    # -- Spectral --
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    # -- R2-Gaussian: --
+    # -- R2-Gaussian --
     # mode = viewpoint_camera.mode
     # if mode == 0:
     #     tanfovx = 1.0
@@ -100,7 +107,7 @@ def render(
     # else:
     #     raise ValueError("Unsupported mode!")
 
-    # -- Default: --
+    # -- Spectral --
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -116,8 +123,10 @@ def render(
         debug=pipe.debug
     )
 
-    # -- R2-Gaussian: --
-    # raster_settings = GaussianRasterizationSettings(
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    # -- R2-Gaussian --
+    # raster_settings_ct = GaussianRasterizationSettings_ct(
     #     image_height=int(viewpoint_camera.image_height),
     #     image_width=int(viewpoint_camera.image_width),
     #     tanfovx=tanfovx,
@@ -127,11 +136,11 @@ def render(
     #     projmatrix=viewpoint_camera.full_proj_transform,
     #     campos=viewpoint_camera.camera_center,
     #     prefiltered=False,
-    #     mode=viewpoint_camera.mode,   # added
+    #     mode=viewpoint_camera.mode,
     #     debug=pipe.debug,
     # )
 
-    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    # rasterizer_ct = GaussianRasterizer_ct(raster_settings=raster_settings_ct)
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -201,7 +210,8 @@ def render(
     else:
         colors_precomp = override_color
 
-    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    # Rasterize visible Gaussians to image, obtain their radii (on screen).
+    # -- Spectral -- 
     rendered_image, radii, rendered_objects = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -211,7 +221,19 @@ def render(
         opacities = opacity,
         scales = scales,
         rotations = rotations,
-        cov3D_precomp = cov3D_precomp)
+        cov3D_precomp = cov3D_precomp
+    )
+
+    # -- R2-Gaussian --
+    # rendered_objects = None
+    # rendered_image, radii = rasterizer_ct(
+    #     means3D=means3D,
+    #     means2D=means2D,
+    #     opacities=opacity,
+    #     scales=scales,
+    #     rotations=rotations,
+    #     cov3D_precomp=cov3D_precomp,
+    # )
     
     out_extras.update({"render_"+str(spectral_id): rendered_image})
     
@@ -255,6 +277,13 @@ def render(
                 scales = scales,
                 rotations = rotations,
                 cov3D_precomp = cov3D_precomp)[0]
+            # image = rasterizer_ct(
+            #     means3D=means3D,
+            #     means2D=means2D,
+            #     opacities=opacity,
+            #     scales=scales,
+            #     rotations=rotations,
+            #     cov3D_precomp=cov3D_precomp)[0]
             out_extras[k] = image        
 
         for k in["normal_"+str(spectral_id), "normal_axis_"+str(spectral_id)] if debug else ["normal_"+str(spectral_id)]:

@@ -62,7 +62,7 @@ class ModelParams(ParamGroup):
         self.brdf_mode = "envmap"
         self.brdf_envmap_res = 64
 
-        # -- CT --
+        # -- R2-Gaussian --
         self.scale_min = 0.0005  # percent of volume size
         self.scale_max = 0.5  # percent of volume size
 
@@ -93,28 +93,55 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
+        
+        # -- Spectral --> Gaussian basics --
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
-        self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
 
+        # -- R2-Gaussian --> Gaussian basics --
+        # self.position_lr_init = 0.0002
+        # self.position_lr_final = 0.00002
+        # self.position_lr_max_steps = 30_000
+        # self.opacity_lr_init = 0.01
+        # self.opacity_lr_final = 0.001
+        # self.opacity_lr_max_steps = 30_000
+        # self.scaling_lr_init = 0.005
+        # self.scaling_lr_final = 0.0005
+        # self.scaling_lr_max_steps = 30_000
+        # self.rotation_lr_init = 0.001
+        # self.rotation_lr_final = 0.0001
+        # self.rotation_lr_max_steps = 30_000
+        
+        # -- Spectral --> LR --
+        self.feature_lr = 0.0025
+        self.percent_dense = 0.01
+        self.opacity_reset_interval = 3000
+        self.lambda_dssim = 0.2              # spectral
+        # self.lambda_dssim = 0.25               # R2
+        
+        # -- Spectral --> densification --
+        self.densification_interval = 100      # spectral + R2 
+        self.densify_from_iter = 500           # spectral + R2
+        self.densify_until_iter = 15_000       # spectral + R2
+        self.densify_grad_threshold = 0.0002 # spectral
+        # self.densify_grad_threshold = 5.0e-5   # R2
+        
+        self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
+        self.density_min_threshold = 0.00001   # R2
+
+        # -- Spectral --> segmentation --
         self.reg3d_interval = 2
         self.reg3d_k = 5
         self.reg3d_lambda_val = 2
         self.reg3d_max_points = 300000
         self.reg3d_sample_size = 1000
 
+        # -- Spectral --> extra --
         self.brdf_mlp_lr_init = 1.6e-2
         self.brdf_mlp_lr_final = 1.6e-3 
         self.brdf_mlp_lr_delay_mult = 0.01
@@ -129,13 +156,10 @@ class OptimizationParams(ParamGroup):
         self.lambda_delta_reg = 1e-3
         self.fix_brdf_lr = 0
 
-        # -- CT --
+        # -- R2-Gaussian --
         self.lambda_tv = 0.05
         self.tv_vol_size = 32
-
-        self.densify_scale_threshold = 0.1  # percent of volume size
-        self.density_min_threshold = 0.00001
-        self.max_scale = None  # percent of volume size
+        self.max_scale = None
         self.max_num_gaussians = 500_000
         self.max_screen_size = None
 
