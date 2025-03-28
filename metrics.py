@@ -18,8 +18,9 @@ from utils.loss_utils import ssim
 from lpipsPyTorch import lpips
 import json
 from tqdm import tqdm
-from utils.image_utils import psnr
+from utils.image_utils import psnr, apply_colormap_viridis
 from argparse import ArgumentParser
+
 
 def readImages(renders_dir, gt_dir):
     renders = []
@@ -69,9 +70,12 @@ def evaluate(model_paths):
                 lpipss = []
 
                 for idx in tqdm(range(len(renders)), desc="Metric evaluation progress"):
-                    ssims.append(ssim(renders[idx], gts[idx]))
-                    psnrs.append(psnr(renders[idx], gts[idx]))
-                    lpipss.append(lpips(renders[idx], gts[idx], net_type='vgg'))
+                    render = apply_colormap_viridis(renders[idx])
+                    gt = apply_colormap_viridis(gts[idx])
+                    
+                    ssims.append(ssim(render, gt))
+                    psnrs.append(psnr(render, gt))
+                    lpipss.append(lpips(render, gt, net_type='vgg'))
 
                 print("  SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
                 print("  PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))

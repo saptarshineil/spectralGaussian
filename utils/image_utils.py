@@ -41,6 +41,25 @@ def apply_depth_colormap(depth, cmap="turbo", min=None, max=None):
     colored_image = apply_colormap(depth, cmap=cmap)
     return colored_image
 
+def apply_colormap_viridis(rendered_tensor):
+    B, C, _, _ = rendered_tensor.shape
+    assert C == 3, "Expected input with 3 channels (grayscale RGB)"
+    
+    vmin = 0.0
+    vmax = rendered_tensor.max().item()
+
+    colorized = []
+    for b in range(B):
+        grayscale_img = rendered_tensor[b, 0].cpu().numpy()  # shape: [H, W]
+        img_norm = np.clip((grayscale_img - vmin) / (vmax - vmin + 1e-8), 0.0, 1.0)
+
+        color_img = cm.viridis(img_norm)[..., :3]  # Discard alpha channel
+        color_tensor = torch.from_numpy(color_img).permute(2, 0, 1).float()
+
+        colorized.append(color_tensor)
+
+    return torch.stack(colorized, dim=0)  # [B, 3, H, W]
+
 def erode(img_in, erode_size=4):
     img_out = np.copy(img_in)
     kernel = np.ones((erode_size, erode_size), np.uint8)
