@@ -519,8 +519,6 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
 
     # Point cloud and ply_path
     if random_init:
-        # raise NotImplementedError('')
-        print("RANDOM INIT")
         n_points = 50000            # copied from R2-Gaussian
         random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
         
@@ -529,20 +527,40 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
         )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
         opacity = np.random.rand(n_points, 1) * random_density_max
         
-        ply_path = os.path.join(path, "init_pcd2.npy")
+        ply_path = os.path.join(path, "init_pcd_random.ply")
         storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
 
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
-    
     elif uniform_init:
-        raise NotImplementedError('')
+        points_per_axis = 40
+        random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
 
+        sVoxel = np.array(meta_data["scanner"]["sVoxel"])
+        offOrigin = np.array(meta_data["scanner"]["offOrigin"])
+
+        vol_min = offOrigin - sVoxel / 2
+        vol_max = offOrigin + sVoxel / 2
+
+        xs = np.linspace(vol_min[0], vol_max[0], points_per_axis)
+        ys = np.linspace(vol_min[1], vol_max[1], points_per_axis)
+        zs = np.linspace(vol_min[2], vol_max[2], points_per_axis)
+        X, Y, Z = np.meshgrid(xs, ys, zs, indexing='ij')
+        xyz = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+        opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
+
+        ply_path = os.path.join(path, "init_pcd_uniform.ply")
+        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
     else:
-        ply_path = os.path.join(path, "init_pcd.npy")
-        point_cloud = np.load(ply_path)
+        npy_path = os.path.join(path, "init_pcd.npy")
+        point_cloud = np.load(npy_path)
         
         xyz = point_cloud[:, :3]
         opacity = point_cloud[:, 3:4]
+
+        ply_path = os.path.join(path, "init_pcd.ply")
+        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
 
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
 
