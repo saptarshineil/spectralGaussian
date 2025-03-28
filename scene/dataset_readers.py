@@ -592,10 +592,10 @@ def readCTameras(meta_data, images_folder, spectral_folder, white_background, rg
         image_name = cam["file_path"]
         image_path = os.path.join(images_folder, image_name)
         image = np.load(image_path) * scene_scale
-        image = (image * 255).astype(np.uint8)  # Convert to uint8
-        image = Image.fromarray(image).convert("RGBA") # Convert to RGBA (grayscale with alpha)
-        if rgba:
-            image = fix_background_rgba(image, white_background)
+        # image = (image * 255).astype(np.uint8)  # Convert to uint8
+        # image = Image.fromarray(image).convert("RGBA") # Convert to RGBA (grayscale with alpha)
+        # if rgba:
+        #     image = fix_background_rgba(image, white_background)
 
         # Spectral images
         spectral_list = sorted(glob(spectral_folder + '/*'))
@@ -603,10 +603,10 @@ def readCTameras(meta_data, images_folder, spectral_folder, white_background, rg
         for spectra in spectral_list:
             spectra_img_path = os.path.join(spectral_folder, spectra, image_name)
             spectra_img = np.load(spectra_img_path) * scene_scale
-            spectra_img = (spectra_img * 255).astype(np.uint8)  # Convert to uint8
-            spectra_img = Image.fromarray(spectra_img).convert("RGBA") # Convert to RGBA (grayscale with alpha)
-            if rgba:
-                spectra_img = fix_background_rgba(spectra_img, white_background)
+            # spectra_img = (spectra_img * 255).astype(np.uint8)  # Convert to uint8
+            # spectra_img = Image.fromarray(spectra_img).convert("RGBA") # Convert to RGBA (grayscale with alpha)
+            # if rgba:
+            #     spectra_img = fix_background_rgba(spectra_img, white_background)
             spectral_images.append(spectra_img)
 
         cam_info = CameraInfoSpecCT(

@@ -121,37 +121,41 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_" + str(spectral_id))
         gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_" + str(spectral_id))
 
-        diffuse_path = os.path.join(model_path, name, "ours_{}".format(iteration), "diffuse_" + str(spectral_id))
-        diffuse_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "diffuse_color_" + str(spectral_id))
-        specular_path = os.path.join(model_path, name, "ours_{}".format(iteration), "specular_" + str(spectral_id))
-        specular_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "specular_color_" + str(spectral_id))
-        roughness_path = os.path.join(model_path, name, "ours_{}".format(iteration), "roughness_" + str(spectral_id))
+        # diffuse_path = os.path.join(model_path, name, "ours_{}".format(iteration), "diffuse_" + str(spectral_id))
+        # diffuse_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "diffuse_color_" + str(spectral_id))
+        # specular_path = os.path.join(model_path, name, "ours_{}".format(iteration), "specular_" + str(spectral_id))
+        # specular_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "specular_color_" + str(spectral_id))
+        # roughness_path = os.path.join(model_path, name, "ours_{}".format(iteration), "roughness_" + str(spectral_id))
+        
         # roughness_color_path = os.path.join(model_path, name, "ours_{}".format(iteration), "roughness_color")
         # color_delta = os.path.join(model_path, name, "ours_{}".format(iteration), "color_delta")
-        normal = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_" + str(spectral_id))
-        normal_axis = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_axis_" + str(spectral_id))
-        delta_normal_norm = os.path.join(model_path, name, "ours_{}".format(iteration), "delta_normal_norm_" + str(spectral_id))
-        normal_cam = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_cam_" + str(spectral_id))
-        normal_ref = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_ref_" + str(spectral_id))
-        depth = os.path.join(model_path, name, "ours_{}".format(iteration), "depth_" + str(spectral_id))
-        alpha = os.path.join(model_path, name, "ours_{}".format(iteration), "alpha_" + str(spectral_id))
+        
+        # normal = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_" + str(spectral_id))
+        # normal_axis = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_axis_" + str(spectral_id))
+        # delta_normal_norm = os.path.join(model_path, name, "ours_{}".format(iteration), "delta_normal_norm_" + str(spectral_id))
+        # normal_cam = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_cam_" + str(spectral_id))
+        # normal_ref = os.path.join(model_path, name, "ours_{}".format(iteration), "normal_ref_" + str(spectral_id))
+        # depth = os.path.join(model_path, name, "ours_{}".format(iteration), "depth_" + str(spectral_id))
+        # alpha = os.path.join(model_path, name, "ours_{}".format(iteration), "alpha_" + str(spectral_id))
 
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
-        makedirs(diffuse_path, exist_ok=True)
-        makedirs(diffuse_color_path, exist_ok=True)
-        makedirs(specular_path, exist_ok=True)
-        makedirs(specular_color_path, exist_ok=True)
-        makedirs(roughness_path, exist_ok=True)
+        # makedirs(diffuse_path, exist_ok=True)
+        # makedirs(diffuse_color_path, exist_ok=True)
+        # makedirs(specular_path, exist_ok=True)
+        # makedirs(specular_color_path, exist_ok=True)
+        # makedirs(roughness_path, exist_ok=True)
+
         # makedirs(color_delta, exist_ok=True)
-        makedirs(normal, exist_ok=True)
-        makedirs(normal_axis, exist_ok=True)
-        makedirs(delta_normal_norm, exist_ok=True)
-        makedirs(normal_cam, exist_ok=True)
-        makedirs(normal_ref, exist_ok=True)
-        makedirs(depth, exist_ok=True)
-        makedirs(alpha, exist_ok=True)
+        
+        # makedirs(normal, exist_ok=True)
+        # makedirs(normal_axis, exist_ok=True)
+        # makedirs(delta_normal_norm, exist_ok=True)
+        # makedirs(normal_cam, exist_ok=True)
+        # makedirs(normal_ref, exist_ok=True)
+        # makedirs(depth, exist_ok=True)
+        # makedirs(alpha, exist_ok=True)
         
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
@@ -165,19 +169,21 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
 
-            torchvision.utils.save_image(results["diffuse_" + str(spectral_id)], os.path.join(diffuse_path, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["diffuse_color_" + str(spectral_id)], os.path.join(diffuse_color_path, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["specular_" + str(spectral_id)], os.path.join(specular_path, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["specular_color_" + str(spectral_id)], os.path.join(specular_color_path, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["roughness_" + str(spectral_id)], os.path.join(roughness_path, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["diffuse_" + str(spectral_id)], os.path.join(diffuse_path, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["diffuse_color_" + str(spectral_id)], os.path.join(diffuse_color_path, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["specular_" + str(spectral_id)], os.path.join(specular_path, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["specular_color_" + str(spectral_id)], os.path.join(specular_color_path, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["roughness_" + str(spectral_id)], os.path.join(roughness_path, '{0:05d}'.format(idx) + ".png"))
+            
             # torchvision.utils.save_image(results["color_delta_" + str(spectral_id)], os.path.join(color_delta, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["normal_" + str(spectral_id)], os.path.join(normal, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["normal_axis_" + str(spectral_id)], os.path.join(normal_axis, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["delta_normal_norm_" + str(spectral_id)], os.path.join(delta_normal_norm, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["normal_cam_" + str(spectral_id)], os.path.join(normal_cam, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["normal_ref_" + str(spectral_id)], os.path.join(normal_ref, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["depth_" + str(spectral_id)], os.path.join(depth, '{0:05d}'.format(idx) + ".png"))
-            torchvision.utils.save_image(results["alpha_" + str(spectral_id)], os.path.join(alpha, '{0:05d}'.format(idx) + ".png"))
+            
+            # torchvision.utils.save_image(results["normal_" + str(spectral_id)], os.path.join(normal, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["normal_axis_" + str(spectral_id)], os.path.join(normal_axis, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["delta_normal_norm_" + str(spectral_id)], os.path.join(delta_normal_norm, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["normal_cam_" + str(spectral_id)], os.path.join(normal_cam, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["normal_ref_" + str(spectral_id)], os.path.join(normal_ref, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["depth_" + str(spectral_id)], os.path.join(depth, '{0:05d}'.format(idx) + ".png"))
+            # torchvision.utils.save_image(results["alpha_" + str(spectral_id)], os.path.join(alpha, '{0:05d}'.format(idx) + ".png"))
 
         gt = views[0].original_image[0:3, :, :]
         out_path = os.path.join(render_path[:-8],'concat_reflectance_'+str(spectral_id))
@@ -187,19 +193,19 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         fps = float(5) if 'train' in out_path else float(1)
         writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
 
-        for file_name in sorted(os.listdir(gts_path)):
-            diffuse = np.array(Image.open(os.path.join(diffuse_path,file_name)))
-            diffuse_color = np.array(Image.open(os.path.join(diffuse_color_path,file_name)))
-            specular = np.array(Image.open(os.path.join(specular_path,file_name)))
-            specular_color = np.array(Image.open(os.path.join(specular_color_path,file_name)))
-            roughness = np.array(Image.open(os.path.join(roughness_path,file_name)))
-            normal_val = np.array(Image.open(os.path.join(normal,file_name)))
+        # for file_name in sorted(os.listdir(gts_path)):
+        #     diffuse = np.array(Image.open(os.path.join(diffuse_path,file_name)))
+        #     diffuse_color = np.array(Image.open(os.path.join(diffuse_color_path,file_name)))
+        #     specular = np.array(Image.open(os.path.join(specular_path,file_name)))
+        #     specular_color = np.array(Image.open(os.path.join(specular_color_path,file_name)))
+        #     roughness = np.array(Image.open(os.path.join(roughness_path,file_name)))
+        #     normal_val = np.array(Image.open(os.path.join(normal,file_name)))
 
-            result = np.hstack([diffuse, diffuse_color, specular, specular_color, roughness, normal_val])
-            result = result.astype('uint8')
+        #     result = np.hstack([diffuse, diffuse_color, specular, specular_color, roughness, normal_val])
+        #     result = result.astype('uint8')
 
-            Image.fromarray(result).save(os.path.join(out_path,file_name))
-            writer.write(result[:,:,::-1])
+        #     Image.fromarray(result).save(os.path.join(out_path,file_name))
+        #     writer.write(result[:,:,::-1])
 
         writer.release()
 
@@ -258,8 +264,8 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         if (not skip_test) and (len(scene.getTestCameras()) > 0):
              render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, classifier, n_spectra)
         
-        if pipeline.brdf:
-             render_lightings(dataset.model_path, "lighting", scene.loaded_iter, gaussians, 1, n_spectra)
+        # if pipeline.brdf:
+        #      render_lightings(dataset.model_path, "lighting", scene.loaded_iter, gaussians, 1, n_spectra)
 
 if __name__ == "__main__":
     # Set up command line argument parser

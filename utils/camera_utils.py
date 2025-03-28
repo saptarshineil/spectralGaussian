@@ -18,39 +18,52 @@ import torch
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    # -- Spectral --
+    # orig_w, orig_h = cam_info.image.size
 
-    if args.resolution in [1, 2, 4, 8]:
-        resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
-    else:  # should be a type that converts to float
-        if args.resolution == -1:
-            if orig_w > 1600:
-                global WARNED
-                if not WARNED:
-                    print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
-                        "If this is not desired, please explicitly specify '--resolution/-r' as 1")
-                    WARNED = True
-                global_down = orig_w / 1600
-            else:
-                global_down = 1
-        else:
-            global_down = orig_w / args.resolution
+    # if args.resolution in [1, 2, 4, 8]:
+    #     resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
+    # else:  # should be a type that converts to float
+    #     if args.resolution == -1:
+    #         if orig_w > 1600:
+    #             global WARNED
+    #             if not WARNED:
+    #                 print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
+    #                     "If this is not desired, please explicitly specify '--resolution/-r' as 1")
+    #                 WARNED = True
+    #             global_down = orig_w / 1600
+    #         else:
+    #             global_down = 1
+    #     else:
+    #         global_down = orig_w / args.resolution
 
-        scale = float(global_down) * float(resolution_scale)
-        resolution = (int(orig_w / scale), int(orig_h / scale))
+    #     scale = float(global_down) * float(resolution_scale)
+    #     resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    # resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    # gt_image = resized_image_rgb[:3, ...]
+
+    # -- R2-Gaussian --
+    gt_image = torch.from_numpy(cam_info.image)[None]
+    
+    # -- Spectral --
+    # spectral_images = cam_info.spectral_images
+    # spectral_images_torch = []
+    # for spectral_img in spectral_images:
+    #     s = PILtoTorch(spectral_img, resolution)
+    #     spectral_images_torch.append(s[:3, ...])
+
+    # -- R2-Gaussian --
     spectral_images = cam_info.spectral_images
     spectral_images_torch = []
     for spectral_img in spectral_images:
-        s = PILtoTorch(spectral_img, resolution)
-        spectral_images_torch.append(s[:3, ...])
+        s = torch.from_numpy(spectral_img)[None]
+        spectral_images_torch.append(s)
 
-    gt_image = resized_image_rgb[:3, ...]
+    # -- Spectral --
     loaded_mask = None
-
-    if resized_image_rgb.shape[1] == 4:
-        loaded_mask = resized_image_rgb[3:4, ...]
+    # if resized_image_rgb.shape[1] == 4:
+    #     loaded_mask = resized_image_rgb[3:4, ...]
 
     return Camera(
         colmap_id=cam_info.uid, 

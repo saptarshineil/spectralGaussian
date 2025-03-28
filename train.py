@@ -152,12 +152,11 @@ def training(
             # ---------- Loss ----------
             # Render
             render_pkg = render(viewpoint_cam, gaussians, pipe, background, spectral_id=spectral_id)
-            image, viewspace_point_tensor, visibility_filter, radii, objects = (
+            image, viewspace_point_tensor, visibility_filter, radii = (
                 render_pkg["render_"+str(spectral_id)], 
                 render_pkg["viewspace_points"], 
                 render_pkg["visibility_filter"], 
                 render_pkg["radii"], 
-                render_pkg["render_object"],
             )
 
             # R2-Gaussian
@@ -170,14 +169,14 @@ def training(
             #     render_pkg["radii"],
             # )
             
-            losses_extra = {}        
-            if pipe.brdf and iteration > opt.normal_reg_from_iter:
-                if iteration<opt.normal_reg_util_iter:
-                    losses_extra['predicted_normal_'+str(spectral_id)] = predicted_normal_loss(render_pkg["normal_"+str(spectral_id)], render_pkg["normal_ref_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
-                losses_extra['zero_one_'+str(spectral_id)] = zero_one_loss(render_pkg["alpha_"+str(spectral_id)])
-                if "delta_normal_norm_"+str(spectral_id) not in render_pkg.keys() and opt.lambda_delta_reg>0: assert()
-                if "delta_normal_norm_"+str(spectral_id)in render_pkg.keys():
-                    losses_extra['delta_reg_'+str(spectral_id)] = delta_normal_loss(render_pkg["delta_normal_norm_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
+            # losses_extra = {}        
+            # if pipe.brdf and iteration > opt.normal_reg_from_iter:
+            #     if iteration<opt.normal_reg_util_iter:
+            #         losses_extra['predicted_normal_'+str(spectral_id)] = predicted_normal_loss(render_pkg["normal_"+str(spectral_id)], render_pkg["normal_ref_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
+            #     losses_extra['zero_one_'+str(spectral_id)] = zero_one_loss(render_pkg["alpha_"+str(spectral_id)])
+            #     if "delta_normal_norm_"+str(spectral_id) not in render_pkg.keys() and opt.lambda_delta_reg>0: assert()
+            #     if "delta_normal_norm_"+str(spectral_id)in render_pkg.keys():
+            #         losses_extra['delta_reg_'+str(spectral_id)] = delta_normal_loss(render_pkg["delta_normal_norm_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
 
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
@@ -226,9 +225,9 @@ def training(
                 loss += opt.lambda_tv * loss_tv
 
             # Loss backward
-            for k in losses_extra.keys():
-                key = k[:k.rfind('_')]
-                loss += getattr(opt, f'lambda_{key}')* losses_extra[k]
+            # for k in losses_extra.keys():
+            #     key = k[:k.rfind('_')]
+            #     loss += getattr(opt, f'lambda_{key}')* losses_extra[k]
             total_loss += loss.item()
             loss.backward()
 
@@ -249,7 +248,7 @@ def training(
             #todo : implement evaluation. Important for Evaluation
             # training_report(iteration, total_l1_loss, total_loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), loss_obj_3d, use_wandb, spectral_ids)
             # todo:check the with gt objects for each spectra and save the classifier path per spectra 
-            losses_extra['psnr'] = psnr(image, gt_image).mean()
+            # losses_extra['psnr'] = psnr(image, gt_image).mean()
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)

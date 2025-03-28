@@ -93,54 +93,54 @@ def render(
 
     # Set up rasterization configuration
     # -- Spectral --
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    # tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    # tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
     # -- R2-Gaussian --
-    # mode = viewpoint_camera.mode
-    # if mode == 0:
-    #     tanfovx = 1.0
-    #     tanfovy = 1.0
-    # elif mode == 1:
-    #     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    #     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    # else:
-    #     raise ValueError("Unsupported mode!")
+    mode = viewpoint_camera.mode
+    if mode == 0:
+        tanfovx = 1.0
+        tanfovy = 1.0
+    elif mode == 1:
+        tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+        tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    else:
+        raise ValueError("Unsupported mode!")
 
     # -- Spectral --
-    raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
-        tanfovx=tanfovx,
-        tanfovy=tanfovy,
-        bg=bg_color,
-        scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
-        sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
-        prefiltered=False,
-        debug=pipe.debug
-    )
-
-    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
-
-    # -- R2-Gaussian --
-    # raster_settings_ct = GaussianRasterizationSettings_ct(
+    # raster_settings = GaussianRasterizationSettings(
     #     image_height=int(viewpoint_camera.image_height),
     #     image_width=int(viewpoint_camera.image_width),
     #     tanfovx=tanfovx,
     #     tanfovy=tanfovy,
+    #     bg=bg_color,
     #     scale_modifier=scaling_modifier,
     #     viewmatrix=viewpoint_camera.world_view_transform,
     #     projmatrix=viewpoint_camera.full_proj_transform,
+    #     sh_degree=pc.active_sh_degree,
     #     campos=viewpoint_camera.camera_center,
     #     prefiltered=False,
-    #     mode=viewpoint_camera.mode,
-    #     debug=pipe.debug,
+    #     debug=pipe.debug
     # )
 
-    # rasterizer_ct = GaussianRasterizer_ct(raster_settings=raster_settings_ct)
+    # rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    # -- R2-Gaussian --
+    raster_settings_ct = GaussianRasterizationSettings_ct(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        mode=viewpoint_camera.mode,
+        debug=pipe.debug,
+    )
+
+    rasterizer_ct = GaussianRasterizer_ct(raster_settings=raster_settings_ct)
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -212,132 +212,133 @@ def render(
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     # -- Spectral -- 
-    rendered_image, radii, rendered_objects = rasterizer(
-        means3D = means3D,
-        means2D = means2D,
-        shs = shs,
-        sh_objs = sh_objs,
-        colors_precomp = colors_precomp,
-        opacities = opacity,
-        scales = scales,
-        rotations = rotations,
-        cov3D_precomp = cov3D_precomp
-    )
+    # rendered_image, radii, rendered_objects = rasterizer(
+    #     means3D = means3D,
+    #     means2D = means2D,
+    #     shs = shs,
+    #     sh_objs = sh_objs,
+    #     colors_precomp = colors_precomp,
+    #     opacities = opacity,
+    #     scales = scales,
+    #     rotations = rotations,
+    #     cov3D_precomp = cov3D_precomp
+    # )
 
     # -- R2-Gaussian --
     # rendered_objects = None
-    # rendered_image, radii = rasterizer_ct(
-    #     means3D=means3D,
-    #     means2D=means2D,
-    #     opacities=opacity,
-    #     scales=scales,
-    #     rotations=rotations,
-    #     cov3D_precomp=cov3D_precomp,
-    # )
+    rendered_image, radii = rasterizer_ct(
+        means3D=means3D,
+        means2D=means2D,
+        opacities=opacity,
+        scales=scales,
+        rotations=rotations,
+        cov3D_precomp=cov3D_precomp,
+    )
     
     out_extras.update({"render_"+str(spectral_id): rendered_image})
     
     # ---- Render extras ----
-    if not speed:
-        # Calculate Gaussians projected depth
-        p_hom = torch.cat([pc.get_xyz, torch.ones_like(pc.get_xyz[...,:1])], -1).unsqueeze(-1)
-        p_view = torch.matmul(viewpoint_camera.world_view_transform.transpose(0,1), p_hom)
-        p_view = p_view[...,:3,:]
-        depth = p_view.squeeze()[...,2:3]
-        depth = depth.repeat(1,3)
+    # if not speed:
+    #     # Calculate Gaussians projected depth
+    #     p_hom = torch.cat([pc.get_xyz, torch.ones_like(pc.get_xyz[...,:1])], -1).unsqueeze(-1)
+    #     p_view = torch.matmul(viewpoint_camera.world_view_transform.transpose(0,1), p_hom)
+    #     p_view = p_view[...,:3,:]
+    #     depth = p_view.squeeze()[...,2:3]
+    #     depth = depth.repeat(1,3)
 
-        render_extras = {"depth_"+str(spectral_id): depth}
-        if debug: 
-            normal_axis_normed = 0.5*normal_axis + 0.5  # range (-1, 1) -> (0, 1)
-            render_extras.update({"normal_axis_"+str(spectral_id): normal_axis_normed})
-        if pipe.brdf:
-            normal_normed = 0.5*normal + 0.5  # range (-1, 1) -> (0, 1)
-            render_extras.update({"normal_"+str(spectral_id): normal_normed})
-            if delta_normal_norm is not None:
-                render_extras.update({"delta_normal_norm_"+str(spectral_id): delta_normal_norm.repeat(1, 3)})
-            if debug:
-                render_extras.update({
-                    "diffuse_"+str(spectral_id): diffuse, 
-                    "specular_"+str(spectral_id): specular, 
-                    "roughness_"+str(spectral_id): roughness.repeat(1, 3), 
-                    "diffuse_color_"+str(spectral_id): diffuse_color, 
-                    "specular_color_"+str(spectral_id): specular_color, 
-                    "color_delta_"+str(spectral_id): color_delta,  
-                    })
+    #     render_extras = {"depth_"+str(spectral_id): depth}
+    #     if debug: 
+    #         normal_axis_normed = 0.5*normal_axis + 0.5  # range (-1, 1) -> (0, 1)
+    #         render_extras.update({"normal_axis_"+str(spectral_id): normal_axis_normed})
+    #     if pipe.brdf:
+    #         normal_normed = 0.5*normal + 0.5  # range (-1, 1) -> (0, 1)
+    #         render_extras.update({"normal_"+str(spectral_id): normal_normed})
+    #         if delta_normal_norm is not None:
+    #             render_extras.update({"delta_normal_norm_"+str(spectral_id): delta_normal_norm.repeat(1, 3)})
+    #         if debug:
+    #             render_extras.update({
+    #                 "diffuse_"+str(spectral_id): diffuse, 
+    #                 "specular_"+str(spectral_id): specular, 
+    #                 "roughness_"+str(spectral_id): roughness.repeat(1, 3), 
+    #                 "diffuse_color_"+str(spectral_id): diffuse_color, 
+    #                 "specular_color_"+str(spectral_id): specular_color, 
+    #                 "color_delta_"+str(spectral_id): color_delta,  
+    #                 })
         
-        for k in render_extras.keys():
-            if render_extras[k] is None: continue
-            image = rasterizer(
-                means3D = means3D,
-                means2D = means2D,
-                shs = None,
-                sh_objs = sh_objs,
-                colors_precomp = render_extras[k],
-                opacities = opacity,
-                scales = scales,
-                rotations = rotations,
-                cov3D_precomp = cov3D_precomp)[0]
-            # image = rasterizer_ct(
-            #     means3D=means3D,
-            #     means2D=means2D,
-            #     opacities=opacity,
-            #     scales=scales,
-            #     rotations=rotations,
-            #     cov3D_precomp=cov3D_precomp)[0]
-            out_extras[k] = image        
+    #     for k in render_extras.keys():
+    #         if render_extras[k] is None: continue
+    #         image = rasterizer(
+    #             means3D = means3D,
+    #             means2D = means2D,
+    #             shs = None,
+    #             sh_objs = sh_objs,
+    #             colors_precomp = render_extras[k],
+    #             opacities = opacity,
+    #             scales = scales,
+    #             rotations = rotations,
+    #             cov3D_precomp = cov3D_precomp)[0]
+    #         # image = rasterizer_ct(
+    #         #     means3D=means3D,
+    #         #     means2D=means2D,
+    #         #     opacities=opacity,
+    #         #     scales=scales,
+    #         #     rotations=rotations,
+    #         #     cov3D_precomp=cov3D_precomp)[0]
+    #         out_extras[k] = image        
 
-        for k in["normal_"+str(spectral_id), "normal_axis_"+str(spectral_id)] if debug else ["normal_"+str(spectral_id)]:
-            if k in out_extras.keys():
-                out_extras[k] = (out_extras[k]) # range (0, 1) -> (-1, 1)
+    #     for k in["normal_"+str(spectral_id), "normal_axis_"+str(spectral_id)] if debug else ["normal_"+str(spectral_id)]:
+    #         if k in out_extras.keys():
+    #             out_extras[k] = (out_extras[k]) # range (0, 1) -> (-1, 1)
 
-        # Rasterize visible Gaussians to alpha mask image. 
-        raster_settings_alpha = GaussianRasterizationSettings(
-            image_height=int(viewpoint_camera.image_height),
-            image_width=int(viewpoint_camera.image_width),
-            tanfovx=tanfovx,
-            tanfovy=tanfovy,
-            bg=torch.tensor([0,0,0], dtype=torch.float32, device="cuda"),
-            scale_modifier=scaling_modifier,
-            viewmatrix=viewpoint_camera.world_view_transform,
-            projmatrix=viewpoint_camera.full_proj_transform,
-            sh_degree=pc.active_sh_degree,
-            campos=viewpoint_camera.camera_center,
-            prefiltered=False,
-            debug=False
-        )
-        rasterizer_alpha = GaussianRasterizer(raster_settings=raster_settings_alpha)
-        alpha = torch.ones_like(means3D) 
-        out_extras["alpha_"+str(spectral_id)] =  rasterizer_alpha(
-            means3D = means3D,
-            means2D = means2D,
-            shs = None,
-            sh_objs = sh_objs,
-            colors_precomp = alpha,
-            opacities = opacity,
-            scales = scales,
-            rotations = rotations,
-            cov3D_precomp = cov3D_precomp)[0]
+    #     # Rasterize visible Gaussians to alpha mask image. 
+    #     raster_settings_alpha = GaussianRasterizationSettings(
+    #         image_height=int(viewpoint_camera.image_height),
+    #         image_width=int(viewpoint_camera.image_width),
+    #         tanfovx=tanfovx,
+    #         tanfovy=tanfovy,
+    #         bg=torch.tensor([0,0,0], dtype=torch.float32, device="cuda"),
+    #         scale_modifier=scaling_modifier,
+    #         viewmatrix=viewpoint_camera.world_view_transform,
+    #         projmatrix=viewpoint_camera.full_proj_transform,
+    #         sh_degree=pc.active_sh_degree,
+    #         campos=viewpoint_camera.camera_center,
+    #         prefiltered=False,
+    #         debug=False
+    #     )
+    #     rasterizer_alpha = GaussianRasterizer(raster_settings=raster_settings_alpha)
+    #     alpha = torch.ones_like(means3D) 
+    #     out_extras["alpha_"+str(spectral_id)] =  rasterizer_alpha(
+    #         means3D = means3D,
+    #         means2D = means2D,
+    #         shs = None,
+    #         sh_objs = sh_objs,
+    #         colors_precomp = alpha,
+    #         opacities = opacity,
+    #         scales = scales,
+    #         rotations = rotations,
+    #         cov3D_precomp = cov3D_precomp)[0]
     
-        # Render normal from depth image, and alpha blend with the background. 
-        out_extras["normal_ref_"+str(spectral_id)] = render_normal(viewpoint_cam=viewpoint_camera, depth=out_extras['depth_'+str(spectral_id)][0], bg_color=bg_color, alpha=out_extras['alpha_'+str(spectral_id)][0])
-        if debug:
-            out_extras["normal_ref_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_ref_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
-            out_extras["normal_axis_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_axis_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
+    #     # Render normal from depth image, and alpha blend with the background. 
+    #     out_extras["normal_ref_"+str(spectral_id)] = render_normal(viewpoint_cam=viewpoint_camera, depth=out_extras['depth_'+str(spectral_id)][0], bg_color=bg_color, alpha=out_extras['alpha_'+str(spectral_id)][0])
+    #     if debug:
+    #         out_extras["normal_ref_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_ref_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
+    #         out_extras["normal_axis_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_axis_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
         
-        if pipe.brdf:
-            # normalize_normal_inplace(out_extras["normal_"+str(spectral_id)], out_extras["alpha_"+str(spectral_id)][0])
-            if debug:
-                out_extras["normal_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
+    #     if pipe.brdf:
+    #         # normalize_normal_inplace(out_extras["normal_"+str(spectral_id)], out_extras["alpha_"+str(spectral_id)][0])
+    #         if debug:
+    #             out_extras["normal_cam_"+str(spectral_id)] = rendered_world2cam(viewpoint_camera, out_extras["normal_"+str(spectral_id)], out_extras['alpha_'+str(spectral_id)][0], bg_color)
         
-        colors_precomp = None
+    #     colors_precomp = None
 
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
         
-    out = {"viewspace_points": screenspace_points,
-                "visibility_filter" : radii > 0,
-                "radii": radii,
-                "render_object": rendered_objects}
+    out = {
+        "viewspace_points": screenspace_points,
+        "visibility_filter" : radii > 0,
+        "radii": radii,
+    }
     out.update(out_extras)
 
     return out

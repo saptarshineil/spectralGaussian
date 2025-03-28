@@ -140,7 +140,8 @@ class Scene:
                                                             "point_cloud.ply"))
 
         else:
-            self.gaussians.create_from_pcd(self.scene_info.point_cloud, self.cameras_extent)
+            # self.gaussians.create_from_pcd(self.scene_info.point_cloud, self.cameras_extent)
+            self.gaussians.create_from_pcd(self.scene_info.point_cloud, 1.0)
 
     def save(self, iteration):
         for spectral_id in self.gaussians.spectral_ids:
