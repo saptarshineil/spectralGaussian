@@ -519,32 +519,32 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
 
     # Point cloud and ply_path
     if random_init:
-        raise NotImplementedError('')
+        # raise NotImplementedError('')
+        print("RANDOM INIT")
+        n_points = 50000            # copied from R2-Gaussian
+        random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
+        
+        xyz = np.array(meta_data["scanner"]["offOrigin"])[None, ...] + np.array(
+            meta_data["scanner"]["sVoxel"]
+        )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
+        opacity = np.random.rand(n_points, 1) * random_density_max
+        
+        ply_path = os.path.join(path, "init_pcd2.npy")
+        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
     
     elif uniform_init:
         raise NotImplementedError('')
 
     else:
-        ply_path = os.path.join(path, "points3D.ply")
-        npy_path = os.path.join(path, "init_pcd.npy")
-        if os.path.exists(npy_path):
-            print("Detected .npy point cloud, converting to .ply...")
+        ply_path = os.path.join(path, "init_pcd.npy")
+        point_cloud = np.load(ply_path)
+        
+        xyz = point_cloud[:, :3]
+        opacity = point_cloud[:, 3:4]
 
-        data_np = np.load(npy_path)  # shape: (N,4) [x, y, z, density]
-
-        xyz      = data_np[:, :3]
-        density  = data_np[:,  3]
-
-        density_min = np.min(density)
-        density_max = np.max(density)
-    
-        rng = max(density_max - density_min, 1e-9)
-        gray_vals = (density - density_min) / rng  # shape: (N,)
-        rgb = np.stack([gray_vals, gray_vals, gray_vals], axis=-1)
-
-        color = rgb * 255.0
-        storePly(ply_path, xyz, color)
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(color), normals=np.zeros((xyz.shape[0], 3)))
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
 
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,
