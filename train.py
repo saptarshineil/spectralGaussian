@@ -68,10 +68,6 @@ def training(
 
     # Set up Gaussians
     gaussians = GaussianModel(
-        dataset.sh_degree,          # Spectral 
-        dataset.brdf_dim,           # Spectral
-        dataset.brdf_mode,          # Spectral
-        dataset.brdf_envmap_res,    # Spectral
         n_spectra,                  # Spectral
         scale_bound                 # CT
     )
@@ -99,10 +95,6 @@ def training(
         # (model_params, first_iter) = torch.load(checkpoint)
         # gaussians.restore(model_params, opt)
 
-    # Set up background
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
     # Set up training loop
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
@@ -123,12 +115,6 @@ def training(
         iter_start.record()
 
         # gaussians.update_learning_rate(iteration)
-
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
-            # if combine_spectra:
-            #     gaussians.average_params_full_spectra()
 
         # Debug
         if (iteration - 1) == debug_from:
@@ -151,32 +137,13 @@ def training(
 
             # ---------- Loss ----------
             # Render
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background, spectral_id=spectral_id)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, spectral_id=spectral_id)
             image, viewspace_point_tensor, visibility_filter, radii = (
                 render_pkg["render_"+str(spectral_id)], 
                 render_pkg["viewspace_points"], 
                 render_pkg["visibility_filter"], 
                 render_pkg["radii"], 
             )
-
-            # R2-Gaussian
-            # Render X-ray projection
-            # render_pkg = render(viewpoint_cam, gaussians, pipe)
-            # image, viewspace_point_tensor, visibility_filter, radii = (
-            #     render_pkg["render"],
-            #     render_pkg["viewspace_points"],
-            #     render_pkg["visibility_filter"],
-            #     render_pkg["radii"],
-            # )
-            
-            # losses_extra = {}        
-            # if pipe.brdf and iteration > opt.normal_reg_from_iter:
-            #     if iteration<opt.normal_reg_util_iter:
-            #         losses_extra['predicted_normal_'+str(spectral_id)] = predicted_normal_loss(render_pkg["normal_"+str(spectral_id)], render_pkg["normal_ref_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
-            #     losses_extra['zero_one_'+str(spectral_id)] = zero_one_loss(render_pkg["alpha_"+str(spectral_id)])
-            #     if "delta_normal_norm_"+str(spectral_id) not in render_pkg.keys() and opt.lambda_delta_reg>0: assert()
-            #     if "delta_normal_norm_"+str(spectral_id)in render_pkg.keys():
-            #         losses_extra['delta_reg_'+str(spectral_id)] = delta_normal_loss(render_pkg["delta_normal_norm_"+str(spectral_id)], render_pkg["alpha_"+str(spectral_id)])
 
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
@@ -303,10 +270,6 @@ def training(
                 # cls_optimizer.step()
                 # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
-            
-            if pipe.brdf and pipe.brdf_mode=="envmap":
-                for spectral_id in list(range(0, gaussians.num_spectral_bands + 1)):
-                    gaussians.brdf_mlp[spectral_id].clamp_(min=0.0, max=1.0)
             
             if n_spectra > 0:
                 if iteration > 1000 and not combine_spectra:

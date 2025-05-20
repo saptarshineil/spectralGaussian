@@ -74,7 +74,6 @@ class Scene:
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
-        # self.gaussians.spectral_ids = scene_info.spectral_ids
 
         # Load cameras
         for resolution_scale in resolution_scales:
@@ -123,16 +122,6 @@ class Scene:
                                                             "point_cloud"+self.loaded_iter,
                                                             "point_cloud.ply"))
             else:
-                # max_spectra = searchForMaxSpectra(os.path.join(self.model_path, "point_cloud_" + self.loaded_iter))
-                if self.gaussians.brdf:
-                    self.gaussians.brdf_mlp = []
-                    for spectral_id in list(range(0, self.gaussians.num_spectral_bands + 1)):
-                        fn = os.path.join(self.model_path,
-                                        "brdf_mlp",
-                                        "iteration_" + str(self.loaded_iter) + "_" + str(spectral_id),
-                                        "brdf_mlp.hdr")
-                        self.gaussians.brdf_mlp.append(load_env(fn, scale=1.0))
-                        print(f"Load envmap from: {fn}")
                 for spectral_id in list(range(0,self.gaussians.num_spectral_bands + 1)):
                     self.gaussians.load_ply(os.path.join(self.model_path,
                                                             "point_cloud",
@@ -147,10 +136,6 @@ class Scene:
         for spectral_id in self.gaussians.spectral_ids:
             point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}_{}".format(iteration, spectral_id))
             self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"), spectral_id=spectral_id)
-            if self.gaussians.brdf:    
-                brdf_mlp_path = os.path.join(self.model_path, f"brdf_mlp/iteration_{iteration}_{spectral_id}/brdf_mlp.hdr")
-                mkdir_p(os.path.dirname(brdf_mlp_path))
-                save_env_map(brdf_mlp_path, self.gaussians.brdf_mlp[spectral_id])
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]
