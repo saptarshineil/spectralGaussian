@@ -183,16 +183,19 @@ def fetchPly(path):
         normals = np.zeros((num_pts, 3))
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
-def storePly(path, xyz, rgb):
+def storePly(path, xyz, opacity):
     # Define the dtype for the structured array
+    # dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+    #         ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
+    #         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
-            ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+            ('opacity', 'f4')]
     
     normals = np.zeros_like(xyz)
 
     elements = np.empty(xyz.shape[0], dtype=dtype)
-    attributes = np.concatenate((xyz, normals, rgb), axis=1)
+    attributes = np.concatenate((xyz, normals, opacity), axis=1)
     elements[:] = list(map(tuple, attributes))
 
     # Create the PlyData object and write to file
@@ -560,9 +563,10 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
         opacity = point_cloud[:, 3:4]
 
         ply_path = os.path.join(path, "init_pcd.ply")
-        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+        # storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+        storePly(ply_path, xyz, opacity)
 
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
+        pcd = BasicPointCloud(points=xyz, opacity=opacity, normals=np.zeros((xyz.shape[0], 3)))
 
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,

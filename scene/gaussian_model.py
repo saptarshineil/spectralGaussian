@@ -239,7 +239,8 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        opacities = self.opacity_inverse_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+        fused_opacities = torch.tensor(pcd.opacity).float().cuda()
+        opacities = self.opacity_inverse_activation(fused_opacities)
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         
@@ -353,17 +354,17 @@ class GaussianModel:
         ''' Learning rate scheduling per step '''
         # Basic Gaussian
         self._update_learning_rate(iteration, "xyz")
+        
         # self._update_learning_rate(iteration, "opacity") # R2-Gaussian
         # self._update_learning_rate(iteration, "scaling") # R2-Gaussian
         # self._update_learning_rate(iteration, "rotation") # R2-Gaussian
 
         # Spectral Gaussian
-        # if self.brdf and not self.fix_brdf_lr:
-        #     parameter_list = []
-        #     for spectral_id in self.spectral_ids:
-        #         parameter_list.extend(["brdf_mlp_" + str(spectral_id),"roughness_"+str(spectral_id),"specular_"+str(spectral_id),"normal_"+str(spectral_id),"f_dc_"+str(spectral_id), "f_rest_"+str(spectral_id)])
-        #     for param in parameter_list:
-        #         lr = self._update_learning_rate(iteration, param)
+        # parameter_list = []
+        # for spectral_id in self.spectral_ids:
+        #     parameter_list.extend(["brdf_mlp_" + str(spectral_id),"roughness_"+str(spectral_id),"specular_"+str(spectral_id),"normal_"+str(spectral_id),"f_dc_"+str(spectral_id), "f_rest_"+str(spectral_id)])
+        # for param in parameter_list:
+        #     lr = self._update_learning_rate(iteration, param)
 
     def reset_opacity(self):
         opacities_new = self.opacity_inverse_activation(
