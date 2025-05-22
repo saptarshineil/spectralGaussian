@@ -30,6 +30,7 @@ def query(
     nVoxel,
     sVoxel,
     pipe: PipelineParams,
+    spectral_id=0,
     scaling_modifier=1.0,
 ):
     """
@@ -52,7 +53,7 @@ def query(
     voxelizer = GaussianVoxelizer(voxel_settings=voxel_settings)
 
     means3D = pc.get_xyz
-    opacity = pc.get_opacity
+    opacity = pc.get_opacity(spectral_id)
 
     scales = None
     rotations = None
@@ -81,6 +82,7 @@ def render(
     viewpoint_camera: Camera,
     pc: GaussianModel,
     pipe: PipelineParams,
+    spectral_id=0,
     scaling_modifier=1.0,
 ):
     """
@@ -128,7 +130,7 @@ def render(
 
     means3D = pc.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity
+    opacity = pc.get_opacity(spectral_id)
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.

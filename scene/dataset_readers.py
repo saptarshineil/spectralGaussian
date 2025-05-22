@@ -183,19 +183,22 @@ def fetchPly(path):
         normals = np.zeros((num_pts, 3))
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
-def storePly(path, xyz, opacity):
+def storePly(path, xyz, opacities, num_spectra):
     # Define the dtype for the structured array
     # dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
     #         ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
     #         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-            ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
-            ('opacity', 'f4')]
+            # ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4')
+            ]
+    for i in range(num_spectra):
+        dtype.append(('opacity' + str(i), 'f4'))
     
-    normals = np.zeros_like(xyz)
+    # normals = np.zeros_like(xyz)
 
     elements = np.empty(xyz.shape[0], dtype=dtype)
-    attributes = np.concatenate((xyz, normals, opacity), axis=1)
+    # attributes = np.concatenate((xyz, normals, opacities), axis=1)
+    attributes = np.concatenate((xyz, opacities), axis=1)
     elements[:] = list(map(tuple, attributes))
 
     # Create the PlyData object and write to file
@@ -529,11 +532,12 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
             meta_data["scanner"]["sVoxel"]
         )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
         opacity = np.random.rand(n_points, 1) * random_density_max
+        opacities = np.repeat(opacity, num_spectra, axis=1)
         
         ply_path = os.path.join(path, "init_pcd_random.ply")
-        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+        storePly(ply_path, xyz, opacities, num_spectra)
 
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
+        pcd = BasicPointCloud(points=xyz, opacities=opacities)
     elif uniform_init:
         points_per_axis = 40
         random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
@@ -550,23 +554,24 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing='ij')
         xyz = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
         opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
+        opacities = np.repeat(opacity, num_spectra, axis=1)
 
         ply_path = os.path.join(path, "init_pcd_uniform.ply")
-        storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
+        storePly(ply_path, xyz, opacities, num_spectra)
 
-        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(opacity), normals=np.zeros((xyz.shape[0], 3)))
+        pcd = BasicPointCloud(points=xyz, opacities=opacities)
     else:
         npy_path = os.path.join(path, "init_pcd.npy")
         point_cloud = np.load(npy_path)
         
         xyz = point_cloud[:, :3]
         opacity = point_cloud[:, 3:4]
+        opacities = np.repeat(opacity, num_spectra, axis=1)
 
         ply_path = os.path.join(path, "init_pcd.ply")
-        # storePly(ply_path, xyz, np.repeat(opacity, 3, axis=1))
-        storePly(ply_path, xyz, opacity)
+        storePly(ply_path, xyz, opacities, num_spectra)
 
-        pcd = BasicPointCloud(points=xyz, opacity=opacity, normals=np.zeros((xyz.shape[0], 3)))
+        pcd = BasicPointCloud(points=xyz, opacities=opacities)
 
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,

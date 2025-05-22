@@ -105,10 +105,12 @@ def training(
     first_iter += 1
     if use_warm_up_iteration:
         combine_spectra = False
-        spectral_ids = list(range(1, n_spectra + 1)) if n_spectra > 0 else [0]
+        # spectral_ids = list(range(1, n_spectra + 1)) if n_spectra > 0 else [0]
+        spectral_ids = list(range(1, n_spectra)) if n_spectra > 0 else [0]
     else:
         combine_spectra = True
-        spectral_ids = list(range(0, n_spectra + 1)) if n_spectra > 0 else [0]
+        # spectral_ids = list(range(1, n_spectra + 1)) if n_spectra > 0 else [0]
+        spectral_ids = list(range(0, n_spectra)) if n_spectra > 0 else [0]
    
     # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
@@ -133,7 +135,7 @@ def training(
         for spectral_id in spectral_ids:
             
             # Update active spectrum
-            gaussians.activate_spectra(spectral_id, iteration >= opt.normal_reg_from_iter)
+            gaussians.activate_spectra(spectral_id)
 
             # ---------- Loss ----------
             # Render
@@ -187,6 +189,7 @@ def training(
                     tv_vol_nVoxel,
                     tv_vol_sVoxel,
                     pipe,
+                    spectral_id,
                 )["ct"]
                 loss_tv = tv_3d_loss(vol_pred, reduction="mean")
                 loss += opt.lambda_tv * loss_tv
@@ -255,12 +258,12 @@ def training(
                         densify_scale_threshold,
                         bbox,
                     )
-            if gaussians.get_opacity.shape[0] == 0:
+            if gaussians.get_opacity(spectral_id).shape[0] == 0:
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                gaussians.reset_opacity()
+                gaussians.reset_opacity(spectral_id)
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -276,7 +279,7 @@ def training(
                     spectral_ids.insert(0, 0)
                     combine_spectra = True
                     gaussians.average_params_full_spectra()
-                    gaussians.activate_spectra(spectral_id, iteration >= opt.normal_reg_from_iter)
+                    gaussians.activate_spectra(spectral_id)
                     spectral_ids = [0]
                     spectral_id = 0
 

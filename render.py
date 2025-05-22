@@ -116,7 +116,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
     #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
-    for spectral_id in list(range(0, n_spectra + 1)):
+    for spectral_id in list(range(0, n_spectra)):
         gaussians.active_spectra = spectral_id
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_" + str(spectral_id))
         gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_" + str(spectral_id))
@@ -134,23 +134,23 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
-        gt = views[0].original_image[0:3, :, :]
-        out_path = os.path.join(render_path[:-8],'concat_reflectance_'+str(spectral_id))
-        makedirs(out_path,exist_ok=True)
-        fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
-        size = (gt.shape[-1]*6,gt.shape[-2])
-        fps = float(5) if 'train' in out_path else float(1)
-        writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
+        # gt = views[0].original_image[0:3, :, :]
+        # out_path = os.path.join(render_path[:-8],'concat_reflectance_'+str(spectral_id))
+        # makedirs(out_path,exist_ok=True)
+        # fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
+        # size = (gt.shape[-1]*6,gt.shape[-2])
+        # fps = float(5) if 'train' in out_path else float(1)
+        # writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
 
-        writer.release()
+        # writer.release()
 
         #todo : fixt output_path
-        out_path = os.path.join(render_path[:-8],'concat_rendering_'+str(spectral_id))
-        makedirs(out_path,exist_ok=True)
-        fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
-        size = (gt.shape[-1]*4,gt.shape[-2])
-        fps = float(5) if 'train' in out_path else float(1)
-        writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
+        # out_path = os.path.join(render_path[:-8],'concat_rendering_'+str(spectral_id))
+        # makedirs(out_path,exist_ok=True)
+        # fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
+        # size = (gt.shape[-1]*4,gt.shape[-2])
+        # fps = float(5) if 'train' in out_path else float(1)
+        # writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
 
         # TEMP: removed segmentation
         # for file_name in sorted(os.listdir(gts_path)):
@@ -169,7 +169,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         #     Image.fromarray(result).save(os.path.join(out_path,file_name))
         #     writer.write(result[:,:,::-1])
 
-        writer.release()
+        # writer.release()
 
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, n_spectra:int):

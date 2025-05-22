@@ -122,7 +122,7 @@ class Scene:
                                                             "point_cloud"+self.loaded_iter,
                                                             "point_cloud.ply"))
             else:
-                for spectral_id in list(range(0,self.gaussians.num_spectral_bands + 1)):
+                for spectral_id in list(range(0,self.gaussians.num_spectral_bands)):
                     self.gaussians.load_ply(os.path.join(self.model_path,
                                                             "point_cloud",
                                                             "iteration_" + str(self.loaded_iter) + "_" + str(spectral_id),
