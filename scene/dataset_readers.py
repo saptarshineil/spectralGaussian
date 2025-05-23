@@ -414,7 +414,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", spectr
     return scene_info
 
 
-def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, uniform_init = False, train_split=None, llffhold=8, n_views=100, white_background=False, rgba=False):
+def readBlenderCTInfo(path, images, eval, n_spectra, spectra_path=None, random_init=False, uniform_init = False, train_split=None, llffhold=8, n_views=100, white_background=False, rgba=False):
     """Read blender format CT data."""
     print("reading CT dataset")
 
@@ -460,8 +460,7 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
     # Spectral ids
     spectra_dir = 'spectra' if spectra_path== None else spectra_path
     spectral_folder = os.path.join(path, spectra_dir)
-    num_spectra = len(glob(spectral_folder + '/*'))
-    spectral_ids = list(range(1,num_spectra + 1))
+    spectral_ids = list(range(1,n_spectra))
 
     # Cameras (train / test)
     cam_infos_unsorted = readCTameras(meta_data, images_folder, spectral_folder, white_background, rgba, scene_scale)
@@ -532,10 +531,10 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
             meta_data["scanner"]["sVoxel"]
         )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
         opacity = np.random.rand(n_points, 1) * random_density_max
-        opacities = np.repeat(opacity, num_spectra, axis=1)
+        opacities = np.repeat(opacity, n_spectra, axis=1)
         
         ply_path = os.path.join(path, "init_pcd_random.ply")
-        storePly(ply_path, xyz, opacities, num_spectra)
+        storePly(ply_path, xyz, opacities, n_spectra)
 
         pcd = BasicPointCloud(points=xyz, opacities=opacities)
     elif uniform_init:
@@ -554,10 +553,10 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing='ij')
         xyz = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
         opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
-        opacities = np.repeat(opacity, num_spectra, axis=1)
+        opacities = np.repeat(opacity, n_spectra, axis=1)
 
         ply_path = os.path.join(path, "init_pcd_uniform.ply")
-        storePly(ply_path, xyz, opacities, num_spectra)
+        storePly(ply_path, xyz, opacities, n_spectra)
 
         pcd = BasicPointCloud(points=xyz, opacities=opacities)
     else:
@@ -566,10 +565,10 @@ def readBlenderCTInfo(path, images, eval, spectra_path=None, random_init=False, 
         
         xyz = point_cloud[:, :3]
         opacity = point_cloud[:, 3:4]
-        opacities = np.repeat(opacity, num_spectra, axis=1)
+        opacities = np.repeat(opacity, n_spectra, axis=1)
 
         ply_path = os.path.join(path, "init_pcd.ply")
-        storePly(ply_path, xyz, opacities, num_spectra)
+        storePly(ply_path, xyz, opacities, n_spectra)
 
         pcd = BasicPointCloud(points=xyz, opacities=opacities)
 

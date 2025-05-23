@@ -43,7 +43,7 @@ def training(
     prepare_output_and_logger(dataset)
 
     # Initialize Scene according to R2-Gaussian (Initialize CT parameters)
-    scene = Scene(dataset)
+    scene = Scene(dataset, n_spectra)
 
     # Set up CT parameters
     scanner_cfg = scene.scanner_cfg

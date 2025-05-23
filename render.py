@@ -177,7 +177,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     with torch.no_grad():
         gaussians = GaussianModel(n_spectra)
 
-        scene = Scene(dataset, load_iteration=iteration, shuffle=False)
+        scene = Scene(dataset, n_spectra, load_iteration=iteration, shuffle=False)
         scene.init_gaussians(gaussians)
 
         # TEMP: removed segmentation
