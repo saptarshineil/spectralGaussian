@@ -28,7 +28,8 @@ class Scene:
     def __init__(
         self, 
         args : ModelParams,
-        n_spectra : int, 
+        n_spectra : int,
+        n_bcoeffs : int, 
         load_iteration=None, 
         shuffle=True, 
         resolution_scales=[1.0]
@@ -61,6 +62,7 @@ class Scene:
                 args.images,
                 args.eval,
                 n_spectra,
+                n_bcoeffs,
                 random_init = args.random_init,
                 uniform_init = args.uniform_init,
                 train_split = args.train_split,

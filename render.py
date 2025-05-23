@@ -172,12 +172,12 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         # writer.release()
 
 
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, n_spectra:int):
+def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, n_spectra : int, n_bcoeffs : int):
     
     with torch.no_grad():
-        gaussians = GaussianModel(n_spectra)
+        gaussians = GaussianModel(n_spectra, n_bcoeffs)
 
-        scene = Scene(dataset, n_spectra, load_iteration=iteration, shuffle=False)
+        scene = Scene(dataset, n_spectra, n_bcoeffs, load_iteration=iteration, shuffle=False)
         scene.init_gaussians(gaussians)
 
         # TEMP: removed segmentation
@@ -206,10 +206,20 @@ if __name__ == "__main__":
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--n_spectra", type=int)
+    parser.add_argument("--n_bcoeffs", type=int, default=2)
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.n_spectra)
+    render_sets(
+        model.extract(args), 
+        args.iteration, 
+        pipeline.extract(args), 
+        args.skip_train, 
+        args.skip_test, 
+        args.n_spectra,
+        args.n_bcoeffs,
+    )
+        # render_lightings

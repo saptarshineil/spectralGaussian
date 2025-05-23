@@ -30,20 +30,21 @@ def training(
     dataset: ModelParams, 
     opt: OptimizationParams, 
     pipe: PipelineParams, 
+    n_spectra,
+    n_bcoeffs, 
     testing_iterations, 
     saving_iterations, 
     checkpoint_iterations, 
     checkpoint, 
     debug_from, 
     use_wandb, 
-    n_spectra, 
     use_warm_up_iteration
 ):
     first_iter = 0
     prepare_output_and_logger(dataset)
 
     # Initialize Scene according to R2-Gaussian (Initialize CT parameters)
-    scene = Scene(dataset, n_spectra)
+    scene = Scene(dataset, n_spectra, n_bcoeffs)
 
     # Set up CT parameters
     scanner_cfg = scene.scanner_cfg
@@ -69,6 +70,7 @@ def training(
     # Set up Gaussians
     gaussians = GaussianModel(
         n_spectra,                  # Spectral
+        n_bcoeffs,                  # Spectral CT
         scale_bound                 # CT
     )
     scene.init_gaussians(gaussians)
@@ -105,11 +107,9 @@ def training(
     first_iter += 1
     if use_warm_up_iteration:
         combine_spectra = False
-        # spectral_ids = list(range(1, n_spectra + 1)) if n_spectra > 0 else [0]
         spectral_ids = list(range(1, n_spectra)) if n_spectra > 0 else [0]
     else:
         combine_spectra = True
-        # spectral_ids = list(range(1, n_spectra + 1)) if n_spectra > 0 else [0]
         spectral_ids = list(range(0, n_spectra)) if n_spectra > 0 else [0]
    
     # Start training loop
@@ -258,12 +258,14 @@ def training(
                         densify_scale_threshold,
                         bbox,
                     )
-            if gaussians.get_opacity(spectral_id).shape[0] == 0:
+            # if gaussians.get_opacity(spectral_id).shape[0] == 0:
+            if gaussians.get_opacity.shape[0] == 0:
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                gaussians.reset_opacity(spectral_id)
+                # gaussians.reset_opacity(spectral_id)
+                gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -353,7 +355,10 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
+
     parser.add_argument('--n_spectra', type=int, default=0)
+    parser.add_argument('--n_bcoeffs', type=int, default=2)
+
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_000, 7_000, 30_000, 30_000])
@@ -401,7 +406,20 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.use_wandb, args.n_spectra, args.use_warm_up_iteration)
+    training(
+        lp.extract(args), 
+        op.extract(args), 
+        pp.extract(args), 
+        args.n_spectra, 
+        args.n_bcoeffs, 
+        args.test_iterations, 
+        args.save_iterations, 
+        args.checkpoint_iterations, 
+        args.start_checkpoint, 
+        args.debug_from, 
+        args.use_wandb, 
+        args.use_warm_up_iteration
+    )
 
     # All done
     print("\nTraining complete.")

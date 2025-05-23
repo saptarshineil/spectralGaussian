@@ -125,7 +125,8 @@ def render(
 
     means3D = pc.get_xyz
     means2D = screenspace_points
-    opacity = pc.get_opacity(spectral_id)
+    # opacity = pc.get_opacity(spectral_id)
+    opacity = pc.get_opacity
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
