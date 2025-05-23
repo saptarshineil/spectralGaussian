@@ -93,8 +93,6 @@ class GaussianModel:
         self.num_spectral_bands = n_spectra
         self.active_spectra = 0
         self.num_objects = 16
-        self._objects_dc = []
-        # self.spectral_ids = list(range(0, self.num_spectral_bands + 1))
         self.spectral_ids = list(range(0, self.num_spectral_bands))
 
         # -- R2-Gaussians attributes --
@@ -112,13 +110,12 @@ class GaussianModel:
             self._xyz,
             self._scaling,
             self._rotation,
-            self._opacity,
+            self._opacities,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
-            self._objects_dc,      # spectral
             self.scale_bound,      # CT
         )
     
@@ -145,12 +142,8 @@ class GaussianModel:
     def average_params_full_spectra(self):
         self.set_grad_params(self.active_spectra, False)
    
-    def get_objects(self):
-        return self._objects_dc[self.active_spectra]
-
     def set_grad_params(self, spectral_id, state):
         self.set_requires_grad(self._opacities[spectral_id], state)
-        self.set_requires_grad(self._objects_dc[spectral_id], state)
 
     def activate_spectra(self, active_spectral_id):
         self.active_spectra =  active_spectral_id
@@ -179,17 +172,12 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         
-        objects_dc = np.zeros((xyz.shape[0], self.num_objects, 1))
-        for idx in range(self.num_objects):
-            objects_dc[:,idx,0] = np.asarray(plydata.elements[0]["obj_dc_"+str(idx)])
-
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
         for spectral_id in self.spectral_ids:
             opacities = np.asarray(plydata.elements[0]["opacities_" + str(spectral_id)])[..., np.newaxis]
             self._opacities.append(nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True)))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._objects_dc.append(nn.Parameter(torch.tensor(objects_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True)))
 
     def save_ply(self, path, viewer_fmt=False, spectral_id = 0):
         mkdir_p(os.path.dirname(path))
@@ -202,13 +190,12 @@ class GaussianModel:
         
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
-        obj_dc = self._objects_dc[spectral_id].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes(spectral_id=spectral_id)]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
 
-        attributes = np.concatenate((xyz, opacities, scale, rotation, obj_dc), axis=1)
+        attributes = np.concatenate((xyz, opacities, scale, rotation), axis=1)
         
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
@@ -227,8 +214,6 @@ class GaussianModel:
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
-        for i in range(self._objects_dc[spectral_id].shape[1]*self._objects_dc[spectral_id].shape[2]):
-            l.append('obj_dc_{}'.format(i))
         return l
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
@@ -236,10 +221,6 @@ class GaussianModel:
         # self.spatial_lr_scale = 1.0
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         
-        # random init obj_id now
-        fused_objects = RGB2SH(torch.rand((fused_point_cloud.shape[0],self.num_objects), device="cuda"))
-        fused_objects = fused_objects[:,:,None]
-
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
@@ -250,7 +231,6 @@ class GaussianModel:
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         
         for spectral_id in self.spectral_ids:
-            self._objects_dc.append(nn.Parameter(fused_objects.transpose(1, 2).contiguous().requires_grad_(True)))
             fused_opacities = torch.tensor(np.asarray(pcd.opacities[:,spectral_id])).float().unsqueeze(1).cuda()
             self._opacities.append(nn.Parameter(fused_opacities.requires_grad_(True)))
 
@@ -276,10 +256,8 @@ class GaussianModel:
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
 
-        # Add extra spectral Gaussian attributes to parameter list
         for spectral_id in list(self.spectral_ids):
             l.extend([  
-                {'params': [self._objects_dc[spectral_id]], 'lr': training_args.feature_lr, "name": "obj_dc_"+str(spectral_id)},
                 {'params': [self._opacities[spectral_id]], 'lr': training_args.opacity_lr, "name": "opacities_"+str(spectral_id)},
             ])
 
@@ -382,8 +360,6 @@ class GaussianModel:
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            if group["name"].startswith("brdf_mlp"):
-                continue
             # elif group["name"][-1].isdigit():
             #     key = group["name"]
             #     if int(key[key.rindex("_") + 1:]) != spectral_id:
@@ -403,9 +379,7 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict, spectral_id):
         optimizable_tensors = {} 
         for group in self.optimizer.param_groups:
-            if group["name"].startswith("brdf_mlp"):
-                continue
-            elif group["name"][-1].isdigit():
+            if group["name"][-1].isdigit():
                 key = group["name"]
                 if int(key[key.rindex("_") + 1:]) != spectral_id:
                     continue
@@ -503,9 +477,8 @@ class GaussianModel:
         
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
-            new_objects_dc = self._objects_dc[spectral_id][selected_pts_mask]
             new_opacities = self._opacities[spectral_id][selected_pts_mask]
-            self.densification_postfix_per_spectra(new_objects_dc, new_opacities, spectral_id)
+            self.densification_postfix_per_spectra(new_opacities, spectral_id)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -536,9 +509,8 @@ class GaussianModel:
         
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
-            new_objects_dc = self._objects_dc[spectral_id][selected_pts_mask].repeat(N,1,1)
             new_opacity = self._opacities[spectral_id][selected_pts_mask].repeat(N,1)
-            self.densification_postfix_per_spectra(new_objects_dc, new_opacity, spectral_id)
+            self.densification_postfix_per_spectra(new_opacity, spectral_id)
 
         prune_filter = torch.cat(
             (
@@ -548,13 +520,11 @@ class GaussianModel:
         )
         self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
-    def densification_postfix_per_spectra(self, new_objects_dc, new_opacities, spectral_id):
+    def densification_postfix_per_spectra(self, new_opacities, spectral_id):
         d = {}
-        d.update({"obj_dc_"+ str(spectral_id): new_objects_dc})
         d.update({"opacities_"+ str(spectral_id): new_opacities})
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d, spectral_id)
-        self._objects_dc[spectral_id] = optimizable_tensors["obj_dc_"+ str(spectral_id)]
         self._opacities[spectral_id] = optimizable_tensors["opacities_"+ str(spectral_id)]
 
     def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D):
@@ -582,7 +552,6 @@ class GaussianModel:
         
         ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for spectral_id in ids:
-            self._objects_dc[spectral_id] = optimizable_tensors["obj_dc_"+str(spectral_id)]
             self._opacities[spectral_id] = optimizable_tensors["opacities_"+ str(self.active_spectra)]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
@@ -592,9 +561,6 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            if group["name"].startswith("brdf_mlp"):
-                continue
-
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
