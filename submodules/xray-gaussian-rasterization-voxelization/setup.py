@@ -37,6 +37,10 @@ setup(
                     "-I"
                     + os.path.join(
                         os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"
+                    ),
+                    "-I"
+                    + os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), "third_party/fixed_headers/"
                     )
                 ]
             },

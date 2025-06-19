@@ -25,6 +25,9 @@ from xray_gaussian_rasterization_voxelization import (
     GaussianVoxelizer,
 )
 
+import matplotlib.pyplot as plt
+import xraylib
+
 
 def rendered_world2cam(viewpoint_cam, normal, alpha, bg_color):
     # normal: (3, H, W), alpha: (H, W), bg_color: (3)
@@ -68,15 +71,15 @@ def normalize_normal_inplace(normal, alpha):
     normal = torch.where(fg_mask, torch.nn.functional.normalize(normal, p=2, dim=0), normal)
 
 
-def render(
+def render_bcoeffs(
     viewpoint_camera,
     pc : GaussianModel, 
     pipe, 
+    bcoeff_id=0,
     scaling_modifier = 1.0, 
     override_color = None, 
     debug=False, 
     speed=False, 
-    spectral_id=0
 ):
     """
     Render the scene. 
@@ -107,7 +110,9 @@ def render(
         raise ValueError("Unsupported mode!")
 
     # -- R2-Gaussian --
+    bcoeffs = pc.get_bcoeffs()
     raster_settings_ct = GaussianRasterizationSettings_ct(
+        num_channels = bcoeffs.shape[1], 
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
@@ -125,8 +130,10 @@ def render(
 
     means3D = pc.get_xyz
     means2D = screenspace_points
-    # opacity = pc.get_opacity(spectral_id)
-    opacity = pc.get_opacity
+    
+    # opacity = pc.get_bcoeff(bcoeff_id)
+     # shape = (num_gaussians, num_basis_materials)
+    # fractions = torch.ones_like(bcoeffs, requires_grad=True, device="cuda") # shape = (num_gaussians, num_basis_materials)
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -142,22 +149,64 @@ def render(
     # -- R2-Gaussian --
     # rendered_objects = None
     rendered_image, radii = rasterizer_ct(
-        means3D=means3D,
-        means2D=means2D,
-        opacities=opacity,
+        means3D, means2D, bcoeffs,
+        # means3D=means3D,
+        # means2D=means2D,
+        # bcoeffs=bcoeffs,
+        # fractions=fractions,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
+
+    # print(rendered_image.shape)
+    # img = rendered_image.detach().cpu().numpy()   # shape (2, 140, 140)
+
+    # # 2.  Plot the two channels side-by-side
+    # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+    # for ch in range(2):
+    #     axes[ch].imshow(img[ch], cmap='gray', vmin=img.min(), vmax=img.max())
+    #     axes[ch].set_title(f'Channel {ch}')
+    #     axes[ch].axis('off')
+
+    # plt.show()
+    # return
     
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
         
     out = {
-        "render_"+str(spectral_id): rendered_image,
+        "render": rendered_image,
         "viewspace_points": screenspace_points,
         "visibility_filter" : radii > 0,
         "radii": radii,
     }
 
     return out
+
+
+def sigma_kn(E: torch.Tensor) -> torch.Tensor:
+    # constants
+    r_e = 2.8179403262e-13           # classical electron radius [cm]
+    sigma_T = 8.0 * torch.pi * r_e**2 / 3.0   # Thomson σ  [cm²]
+    eps = E / 511.0              # hν / mₑc², dimensionless
+    one = torch.ones_like(eps)
+
+    term1 = (1.0 + eps) / eps**3
+    term2 = 2*eps*(1+eps)/(1+2*eps)
+    term3 = torch.log1p(2*eps)       # ln(1+2ε) • numerically stable
+    sigma = sigma_T * term1 * (term2 - term3)
+
+    return sigma
+
+
+def render(bcoeff_image, E):
+    # mu_PE = 5.31e3 * E**(-3) * bcoeff_image[0]
+    mu_PE = xraylib.CS_Photo(6, float(E)) * bcoeff_image[0]
+    # mu_C = sigma_kn(E) * bcoeff_image[1]
+    mu_C = xraylib.CS_KN(float(E)) * bcoeff_image[1]
+
+    image = mu_PE + mu_C
+
+    return image.unsqueeze(0)

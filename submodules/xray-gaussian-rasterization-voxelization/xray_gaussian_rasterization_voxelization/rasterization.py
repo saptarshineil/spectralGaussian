@@ -26,7 +26,8 @@ def cpu_deep_copy_tuple(input_tuple):
 def rasterize_gaussians(
     means3D,
     means2D,
-    opacities,
+    bcoeffs,
+    # fractions,
     scales,
     rotations,
     cov3Ds_precomp,
@@ -35,7 +36,8 @@ def rasterize_gaussians(
     return _RasterizeGaussians.apply(
         means3D,
         means2D,
-        opacities,
+        bcoeffs,
+        # fractions,
         scales,
         rotations,
         cov3Ds_precomp,
@@ -49,7 +51,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx,
         means3D,
         means2D,
-        opacities,
+        bcoeffs,
+        # fractions,
         scales,
         rotations,
         cov3Ds_precomp,
@@ -59,7 +62,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Restructure arguments the way that the C++ lib expects them
         args = (
             means3D,
-            opacities,
+            bcoeffs,
+            # fractions,
             scales,
             rotations,
             raster_settings.scale_modifier,
@@ -73,6 +77,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.campos,
             raster_settings.prefiltered,
             raster_settings.mode,
+            raster_settings.num_channels,
             raster_settings.debug,
         )
 
@@ -102,6 +107,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.mode = raster_settings.mode
         ctx.save_for_backward(
             means3D,
+            bcoeffs,
             scales,
             rotations,
             cov3Ds_precomp,
@@ -121,6 +127,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         mode = ctx.mode
         (
             means3D,
+            bcoeffs,
             scales,
             rotations,
             cov3Ds_precomp,
@@ -133,6 +140,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Restructure args as C++ method expects them
         args = (
             means3D,
+            bcoeffs,
             radii,
             scales,
             rotations,
@@ -149,6 +157,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             binningBuffer,
             imgBuffer,
             mode,
+            raster_settings.num_channels,
             raster_settings.debug,
         )
 
@@ -160,7 +169,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             try:
                 (
                     grad_means2D,
-                    grad_opacities,
+                    grad_bcoeffs,
                     _,  # grad_mu
                     grad_means3D,
                     grad_cov3Ds_precomp,
@@ -176,7 +185,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
             (
                 grad_means2D,
-                grad_opacities,
+                grad_bcoeffs,
                 _,
                 grad_means3D,
                 grad_cov3Ds_precomp,
@@ -186,7 +195,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         grads = (
             grad_means3D,
             grad_means2D,
-            grad_opacities,
+            grad_bcoeffs,
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
@@ -198,6 +207,7 @@ class _RasterizeGaussians(torch.autograd.Function):
 
 # Change according to line 45 gaussian_renderer/__init__.py
 class GaussianRasterizationSettings_ct(NamedTuple):
+    num_channels: int
     image_height: int
     image_width: int
     tanfovx: float
@@ -230,7 +240,8 @@ class GaussianRasterizer_ct(nn.Module):
         self,
         means3D,
         means2D,
-        opacities,
+        bcoeffs,
+        # fractions,
         scales=None,
         rotations=None,
         cov3D_precomp=None,
@@ -256,7 +267,8 @@ class GaussianRasterizer_ct(nn.Module):
         return rasterize_gaussians(
             means3D,
             means2D,
-            opacities,
+            bcoeffs,
+            # fractions,
             scales,
             rotations,
             cov3D_precomp,

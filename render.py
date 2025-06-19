@@ -11,7 +11,7 @@ from scene import Scene
 import os
 from tqdm import tqdm
 from os import makedirs
-from gaussian_renderer import render, render_lighting
+from gaussian_renderer import render_bcoeffs, render, render_lighting
 import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
@@ -124,52 +124,19 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
+        E = torch.tensor([50., 120.], dtype=torch.float32)
+
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
-            results = render(view, gaussians, pipeline, debug=True, spectral_id=spectral_id)
+            results = render_bcoeffs(view, gaussians, pipeline, spectral_id, debug=True)
             torch.cuda.synchronize()
-            rendering = results["render_" + str(spectral_id)]
+            bcoeff_image = results["render"]
+
+            rendering = render(bcoeff_image, E[spectral_id])
             
             gt = view.original_image[0:3, :, :] if spectral_id == 0 else view.spectral_images[spectral_id - 1][0:3,:,:]
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-
-        # gt = views[0].original_image[0:3, :, :]
-        # out_path = os.path.join(render_path[:-8],'concat_reflectance_'+str(spectral_id))
-        # makedirs(out_path,exist_ok=True)
-        # fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
-        # size = (gt.shape[-1]*6,gt.shape[-2])
-        # fps = float(5) if 'train' in out_path else float(1)
-        # writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
-
-        # writer.release()
-
-        #todo : fixt output_path
-        # out_path = os.path.join(render_path[:-8],'concat_rendering_'+str(spectral_id))
-        # makedirs(out_path,exist_ok=True)
-        # fourcc = cv2.VideoWriter.fourcc(*'DIVX') 
-        # size = (gt.shape[-1]*4,gt.shape[-2])
-        # fps = float(5) if 'train' in out_path else float(1)
-        # writer = cv2.VideoWriter(os.path.join(out_path,'result.mp4'), fourcc, fps, size)
-
-        # TEMP: removed segmentation
-        # for file_name in sorted(os.listdir(gts_path)):
-        #     gt = np.array(Image.open(os.path.join(gts_path,file_name)))
-        #     rgb = np.array(Image.open(os.path.join(render_path,file_name)))
-            
-        #     pred_obj = np.array(Image.open(os.path.join(pred_obj_path,file_name)))
-        #     color_mask = np.array(Image.open(os.path.join(colormask_path,file_name)))
-            
-        #     # pred_obj = np.array(Image.open(os.path.join(roughness_path,file_name)))
-        #     # pred_obj = np.array(Image.open(os.path.join(normal,file_name)))
-
-        #     result = np.hstack([gt,rgb,pred_obj, color_mask])
-        #     result = result.astype('uint8')
-
-        #     Image.fromarray(result).save(os.path.join(out_path,file_name))
-        #     writer.write(result[:,:,::-1])
-
-        # writer.release()
 
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, n_spectra : int, n_bcoeffs : int):

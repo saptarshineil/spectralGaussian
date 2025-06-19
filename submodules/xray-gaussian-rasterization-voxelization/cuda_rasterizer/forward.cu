@@ -195,13 +195,11 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
-template<int C>
 __global__ void preprocessCUDA(int P,
 	const float* orig_points,
 	const glm::vec3* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
-	const float* opacities,
 	const float* cov3D_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -283,7 +281,8 @@ __global__ void preprocessCUDA(int P,
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	conic_opacity[idx] = { conic.x, conic.y, conic.z, 1.0f };
+	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 	mus[idx] = cov.w;
 }
@@ -291,14 +290,14 @@ __global__ void preprocessCUDA(int P,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H,
+	int W, int H, int CHANNELS,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
+	const float*  __restrict__ basis_coeffs,
 	const float* __restrict__ mus,
 	uint32_t* __restrict__ n_contrib,
 	float* __restrict__ out_color)
@@ -319,8 +318,9 @@ renderCUDA(
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int toDo = range.y - range.x;
+	const int total = range.y - range.x;
+	const int rounds = (total + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	// const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
@@ -329,69 +329,83 @@ renderCUDA(
 	__shared__ float collected_mu[BLOCK_SIZE];
 
 	// Initialize helper variables
-	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
-	float C[CHANNELS] = { 0 };
+	// uint32_t contributor = 0;
+	// float C[CHANNELS] = { 0 };
 
 	// Iterate over batches until all done or range is complete
-	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	for (int ch = 0; ch < CHANNELS; ++ch) 
 	{
-		// End if entire block votes that it is done rasterizing
-		int num_done = __syncthreads_count(done);
-		if (num_done == BLOCK_SIZE)
-			break;
+		float C = 0.0f;
+		uint32_t contributor = 0;
+		int remaining = total;
 
-		// Collectively fetch per-Gaussian data from global to shared
-		int progress = i * BLOCK_SIZE + block.thread_rank();
-		if (range.x + progress < range.y)
+		for (int i = 0; i < rounds; i++, remaining -= BLOCK_SIZE)
 		{
-			int coll_id = point_list[range.x + progress];
-			collected_id[block.thread_rank()] = coll_id;
-			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
-			collected_mu[block.thread_rank()] = mus[coll_id];
+			// End if entire block votes that it is done rasterizing
+			int num_done = __syncthreads_count(done);
+			if (num_done == BLOCK_SIZE)
+				break;
+
+			// Collectively fetch per-Gaussian data from global to shared
+			int progress = i * BLOCK_SIZE + block.thread_rank();
+			if (range.x + progress < range.y)
+			{
+				int coll_id = point_list[range.x + progress];
+				collected_id[block.thread_rank()] = coll_id;
+				collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+				collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+				collected_mu[block.thread_rank()] = mus[coll_id];
+			}
+			block.sync();
+
+			// Iterate over current batch
+			const int batch_size = min(BLOCK_SIZE, remaining);
+			for (int j = 0; !done && j < batch_size; j++)
+			{
+				// Keep track of current position in range
+				contributor++;
+
+				// Resample using conic matrix (cf. "Surface 
+				// Splatting" by Zwicker et al., 2001)
+				float2 xy = collected_xy[j];
+				float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+				float4 con_o = collected_conic_opacity[j];
+				float mu = collected_mu[j];
+				float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+				if (power > 0.0f)
+					continue;
+
+				//! We compute mu to consider integration.
+				// const float alpha = con_o.w * mu * exp(power);
+				float base_alpha = mu * expf(power);
+				if (base_alpha < 0.00001f)
+					continue;
+			
+				//! Simply add all alphas for X-ray imaging.
+				const int global_id = collected_id[j];
+				C += con_o.w * basis_coeffs[global_id*CHANNELS + ch] * base_alpha; // a_i * f (* base alpha)
+
+				// Keep track of last range entry to update this
+				// pixel.
+				if (ch == 0)
+					last_contributor = contributor;
+			}
 		}
-		block.sync();
 
-		// Iterate over current batch
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
-		{
-			// Keep track of current position in range
-			contributor++;
-
-			// Resample using conic matrix (cf. "Surface 
-			// Splatting" by Zwicker et al., 2001)
-			float2 xy = collected_xy[j];
-			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			float4 con_o = collected_conic_opacity[j];
-			float mu = collected_mu[j];
-			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
-			if (power > 0.0f)
-				continue;
-
-			//! We compute mu to consider integration.
-			const float alpha = con_o.w * mu * exp(power);
-			if (alpha < 0.00001f)
-				continue;
-		
-			//! Simply add all alphas for X-ray imaging.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += alpha;
-
-			// Keep track of last range entry to update this
-			// pixel.
-			last_contributor = contributor;
-		}
+		// All threads that treat valid pixel write out their final
+		// rendering data to the frame and auxiliary buffers.
+		// if (inside)
+		// {
+		// 	n_contrib[pix_id] = last_contributor;
+		// 	for (int ch = 0; ch < CHANNELS; ch++)
+		// 		out_color[ch * H * W + pix_id] = C;
+		// }
+		if (inside)
+            out_color[ch * H * W + pix_id] = C;
 	}
-
-	// All threads that treat valid pixel write out their final
-	// rendering data to the frame and auxiliary buffers.
 	if (inside)
-	{
-		n_contrib[pix_id] = last_contributor;
-		for (int ch = 0; ch < CHANNELS; ch++)
-			out_color[ch * H * W + pix_id] = C[ch];
-	}
+        n_contrib[pix_id] = last_contributor;
 }
 
 
@@ -399,22 +413,25 @@ void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H,
+	int W, int H, int CHANNELS,
 	const float2* means2D,
 	const float4* conic_opacity,
+	const float* basis_coeffs,
 	const float* mus,
 	uint32_t* n_contrib,
 	float* out_color)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	renderCUDA<< <grid, block >> > (
 		ranges,
 		point_list,
-		W, H,
+		W, H, CHANNELS,
 		means2D,
 		conic_opacity,
+		basis_coeffs,
 		mus,
 		n_contrib,
-		out_color);
+		out_color
+	);
 }
 
 
@@ -423,7 +440,6 @@ void FORWARD::preprocess(int P,
 	const glm::vec3* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
-	const float* opacities,
 	const float* cov3D_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -443,13 +459,12 @@ void FORWARD::preprocess(int P,
 	const int mode
 	)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<< <(P + 255) / 256, 256 >> > (
 		P,
 		means3D,
 		scales,
 		scale_modifier,
 		rotations,
-		opacities,
 		cov3D_precomp,
 		viewmatrix, 
 		projmatrix,
@@ -467,5 +482,5 @@ void FORWARD::preprocess(int P,
 		tiles_touched,
 		prefiltered,
 		mode
-		);
+	);
 }

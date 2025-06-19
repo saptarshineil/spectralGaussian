@@ -10,7 +10,7 @@ import os
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
-from gaussian_renderer import render, network_gui
+from gaussian_renderer import render_bcoeffs, render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -59,13 +59,6 @@ def training(
     scale_bound = None
     if dataset.scale_min > 0 and dataset.scale_max > 0:
         scale_bound = np.array([dataset.scale_min, dataset.scale_max]) * volume_to_world
-    queryfunc = lambda x: query(
-        x,
-        scanner_cfg["offOrigin"],
-        scanner_cfg["nVoxel"],
-        scanner_cfg["sVoxel"],
-        pipe,
-    )
 
     # Set up Gaussians
     gaussians = GaussianModel(
@@ -108,9 +101,11 @@ def training(
     if use_warm_up_iteration:
         combine_spectra = False
         spectral_ids = list(range(1, n_spectra)) if n_spectra > 0 else [0]
+        bcoeff_ids = list(range(1, n_bcoeffs)) if n_bcoeffs > 0 else [0]
     else:
         combine_spectra = True
         spectral_ids = list(range(0, n_spectra)) if n_spectra > 0 else [0]
+        bcoeff_ids = list(range(0, n_bcoeffs)) if n_bcoeffs > 0 else [0]
    
     # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
@@ -130,23 +125,30 @@ def training(
         # Track losses
         total_loss = 0
         # total_l1_loss = 0
+
+        # ------------ Basis Coefficients ------------
+        render_pkg = render_bcoeffs(viewpoint_cam, gaussians, pipe)
+        bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
+            render_pkg["render"], 
+            render_pkg["viewspace_points"], 
+            render_pkg["visibility_filter"], 
+            render_pkg["radii"], 
+        )
         
-        # Compute loss per spectrum
+        # ------------ Energy Levels ------------
+        E = torch.tensor([50., 120.], dtype=torch.float32) 
+
+        # Compute loss per spectral channel
         for spectral_id in spectral_ids:
-            
             # Update active spectrum
-            gaussians.activate_spectra(spectral_id)
+            # gaussians.activate_spectra(spectral_id)
+
+            # ---------- Spectral Constants ----------
+
+            # ---------- Spectral Beer-Lambert ----------
+            image = render(bcoeff_image, E[spectral_id])
 
             # ---------- Loss ----------
-            # Render
-            render_pkg = render(viewpoint_cam, gaussians, pipe, spectral_id=spectral_id)
-            image, viewspace_point_tensor, visibility_filter, radii = (
-                render_pkg["render_"+str(spectral_id)], 
-                render_pkg["viewspace_points"], 
-                render_pkg["visibility_filter"], 
-                render_pkg["radii"], 
-            )
-
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
             loss_l1 = l1_loss(image, gt_image)
@@ -199,7 +201,7 @@ def training(
             #     key = k[:k.rfind('_')]
             #     loss += getattr(opt, f'lambda_{key}')* losses_extra[k]
             total_loss += loss.item()
-            loss.backward()
+        loss.backward()
 
         iter_end.record()
         
@@ -293,6 +295,7 @@ def training(
         
 
 def prepare_output_and_logger(args):    
+
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
