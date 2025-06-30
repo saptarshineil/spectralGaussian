@@ -17,7 +17,8 @@ from scipy.spatial.transform import Rotation as R
 
 class Camera(nn.Module):
     def __init__(self, 
-        colmap_id, 
+        colmap_id,
+        scanner_cfg, 
         R, 
         T, 
         angle,                              # R2-gaussian
@@ -70,9 +71,26 @@ class Camera(nn.Module):
         self.scale = scale
 
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
+        # self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
+        self.projection_matrix = (
+            getProjectionMatrix(
+                fovX=self.FoVx,
+                fovY=self.FoVy,
+                znear=self.znear,
+                zfar=self.zfar,
+                mode=mode,
+                scanner_cfg=scanner_cfg,
+            )
+            .transpose(0, 1).cuda()
+        )
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+
+        self.scanner_cfg = scanner_cfg
+        rays_d = self.get_rays()
+        DSD = float(scanner_cfg["DSD"])
+        self.det_pix_3D = self.camera_center.view(1,1,3) + rays_d * DSD
+        self.view_dir = rays_d[0,0] / rays_d[0,0].norm()
 
         if objects is not None:
             self.objects = objects.to(self.data_device)
@@ -86,7 +104,7 @@ class Camera(nn.Module):
         
         if style_transfer:
             self.transfer_image = self.original_image.clone()
-        
+
     def get_calib_matrix_nerf(self):
         focal = fov2focal(self.FoVx, self.image_width)  # original focal length
         intrinsic_matrix = torch.tensor([[focal, 0, self.image_width / 2], [0, focal, self.image_height / 2], [0, 0, 1]]).float()

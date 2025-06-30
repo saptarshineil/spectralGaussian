@@ -92,30 +92,32 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000
+        # self.iterations = 30_000
+        self.iterations = 5_000
+        # self.iterations = 1
         
         # -- Spectral --> Gaussian basics --
-        self.position_lr_init = 0.00016
-        self.position_lr_final = 0.0000016
-        self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 30_000
-        self.opacity_lr = 0.05
-        self.scaling_lr = 0.005
-        self.rotation_lr = 0.001
+        # self.position_lr_init = 0.00016
+        # self.position_lr_final = 0.0000016
+        # self.position_lr_delay_mult = 0.01
+        # self.position_lr_max_steps = 30_000
+        # self.opacity_lr = 0.05
+        # self.scaling_lr = 0.005
+        # self.rotation_lr = 0.001
 
         # -- R2-Gaussian --> Gaussian basics --
-        # self.position_lr_init = 0.0002
-        # self.position_lr_final = 0.00002
-        # self.position_lr_max_steps = 30_000
-        # self.opacity_lr_init = 0.01
-        # self.opacity_lr_final = 0.001
-        # self.opacity_lr_max_steps = 30_000
-        # self.scaling_lr_init = 0.005
-        # self.scaling_lr_final = 0.0005
-        # self.scaling_lr_max_steps = 30_000
-        # self.rotation_lr_init = 0.001
-        # self.rotation_lr_final = 0.0001
-        # self.rotation_lr_max_steps = 30_000
+        self.position_lr_init = 0.0002
+        self.position_lr_final = 0.00002
+        self.position_lr_max_steps = 30_000
+        self.opacity_lr_init = 0.01
+        self.opacity_lr_final = 0.001
+        self.opacity_lr_max_steps = 30_000
+        self.scaling_lr_init = 0.005
+        self.scaling_lr_final = 0.0005
+        self.scaling_lr_max_steps = 30_000
+        self.rotation_lr_init = 0.001
+        self.rotation_lr_final = 0.0001
+        self.rotation_lr_max_steps = 30_000
         
         # -- Spectral --> LR --
         self.feature_lr = 0.0025
@@ -162,6 +164,19 @@ class OptimizationParams(ParamGroup):
         self.max_scale = None
         self.max_num_gaussians = 500_000
         self.max_screen_size = None
+
+        # -- Test --
+        self.pe_lr_init = 0.001  # PE initial learning rate (higher)
+        self.pe_lr_final = 0.0001
+        self.pe_lr_max_steps = 30000
+
+        self.compton_lr_init = 0.005  # Compton initial learning rate (lower)
+        self.compton_lr_final = 0.0005
+        self.compton_lr_max_steps = 30000
+
+        self.lambda_tv2d      = 1e-4   # start tiny, scale up ×10 if still noisy
+        self.lambda_edge      = 1e-4
+        self.lambda_fraction  = 1e-4   # set to 0. if you rely on soft-max
 
         super().__init__(parser, "Optimization Parameters")
 

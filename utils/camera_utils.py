@@ -66,7 +66,8 @@ def loadCam(args, id, cam_info, resolution_scale):
     #     loaded_mask = resized_image_rgb[3:4, ...]
 
     return Camera(
-        colmap_id=cam_info.uid, 
+        colmap_id=cam_info.uid,
+        scanner_cfg=cam_info.scanner_cfg, 
         R=cam_info.R, 
         T=cam_info.T,
         angle=cam_info.angle,

@@ -443,6 +443,7 @@ __global__ void preprocessCUDA(
 }
 
 // Backward version of the rendering procedure.
+template <uint32_t MAX_CH>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -454,11 +455,14 @@ renderCUDA(
 	const float* __restrict__ mus,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dpixels_opacity,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dbcoeffs,
+	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dmu)
 {	
+	assert(CHANNELS <= MAX_CH);
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -484,6 +488,13 @@ renderCUDA(
 	// Gaussian is known from each pixel from the forward.
 	uint32_t contributor = toDo;
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
+
+	float dL_dpixel[MAX_CH] = { 0.0f };
+	float dL_dpixel_opacity = 0.0f;
+	if (inside)
+		for (int i = 0; i < CHANNELS; i++)
+			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+		dL_dpixel_opacity = dL_dpixels_opacity[pix_id];
     
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
@@ -537,18 +548,27 @@ renderCUDA(
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
 			// Since we are simple sum, dchannel_dalpha = 1.0
-			float dL_dalpha = 0.0f;
+			// float dL_dalpha = 0.0f;
+			float colour_term = 0.0f;
 			const int global_id = collected_id[j];
 
 			for (int ch = 0; ch < CHANNELS; ch++)
 			{
-				float dL_dchannel = inside ? dL_dpixels[ch * H * W + pix_id] : 0.f;
+				// float dL_dchannel = inside ? dL_dpixels[ch * H * W + pix_id] : 0.f;
+				float dL_dchannel = dL_dpixel[ch];
 				// const float dL_dchannel = dL_dpixel[ch];
 				float bcoeff = basis_coeffs[global_id*CHANNELS + ch];
-				dL_dalpha += bcoeff * dL_dchannel;
-
-				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
+				// dL_dalpha += bcoeff * dL_dchannel;
+				colour_term += bcoeff * dL_dchannel;
+				
+				// atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
+				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * colour_term * dL_dchannel);
 			}
+
+			// dL_dalpha += con_o.w * dL_dpixel_opacity;
+			float opacity_term  = dL_dpixel_opacity;
+			float dL_dalpha   = colour_term + con_o.w * opacity_term;
+			float dL_dopacity_i = base_alpha * colour_term + base_alpha * opacity_term;
 
 			// Helpful reusable temporary variables
 			const float dL_dG = con_o.w * mu * dL_dalpha;
@@ -567,7 +587,7 @@ renderCUDA(
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
-			// atomicAdd(&(dL_dopacity[global_id]), mu * G * dL_dalpha);
+			atomicAdd(&(dL_dopacity[global_id]), dL_dopacity_i);
 			atomicAdd(&(dL_dmu[global_id]), con_o.w * G * dL_dalpha);
 		}
 	}
@@ -646,13 +666,15 @@ void BACKWARD::render(
 	const float* mus,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
+	const float* dL_dpixels_opacity,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dbcoeffs,
+	float* dL_dopacity,
 	float* dL_dmu
 	)
 {
-	renderCUDA<< <grid, block >> >(
+	renderCUDA<8> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H, CHANNELS,
@@ -662,9 +684,11 @@ void BACKWARD::render(
 		mus,
 		n_contrib,
 		dL_dpixels,
+		dL_dpixels_opacity,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dbcoeffs,
+		dL_dopacity,
 		dL_dmu
 		);
 }

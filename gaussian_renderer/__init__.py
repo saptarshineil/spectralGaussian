@@ -25,8 +25,17 @@ from xray_gaussian_rasterization_voxelization import (
     GaussianVoxelizer,
 )
 
+# from xray_gaussian_rasterization_voxelization import (
+#     GaussianRasterizationSettings,
+#     GaussianRasterizer,
+#     GaussianVoxelizationSettings,
+#     GaussianVoxelizer,
+# )
+
 import matplotlib.pyplot as plt
 import xraylib
+# import numpy as np
+# import scipy.constants as sc
 
 
 def rendered_world2cam(viewpoint_cam, normal, alpha, bg_color):
@@ -110,7 +119,7 @@ def render_bcoeffs(
         raise ValueError("Unsupported mode!")
 
     # -- R2-Gaussian --
-    bcoeffs = pc.get_bcoeffs()
+    bcoeffs = pc.get_bcoeffs
     raster_settings_ct = GaussianRasterizationSettings_ct(
         num_channels = bcoeffs.shape[1], 
         image_height=int(viewpoint_camera.image_height),
@@ -148,35 +157,42 @@ def render_bcoeffs(
 
     # -- R2-Gaussian --
     # rendered_objects = None
-    rendered_image, radii = rasterizer_ct(
-        means3D, means2D, bcoeffs,
-        # means3D=means3D,
-        # means2D=means2D,
-        # bcoeffs=bcoeffs,
-        # fractions=fractions,
+    # opacity = torch.ones(
+    #     (bcoeffs.shape[0],),
+    #     dtype=bcoeffs.dtype,
+    #     device=bcoeffs.device,
+    #     requires_grad=False
+    # )
+    opacity = pc.get_opacity
+
+    rendered_image, opacity_image, radii = rasterizer_ct(
+        means3D=means3D,
+        means2D=means2D,
+        bcoeffs=bcoeffs,
+        opacity=opacity,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
 
-    # print(rendered_image.shape)
     # img = rendered_image.detach().cpu().numpy()   # shape (2, 140, 140)
+    # plt.imshow(img[0])
+    # plt.show()
 
-    # # 2.  Plot the two channels side-by-side
+    # # # 2.  Plot the two channels side-by-side
     # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
 
     # for ch in range(2):
-    #     axes[ch].imshow(img[ch], cmap='gray', vmin=img.min(), vmax=img.max())
+    #     axes[ch].imshow(img[ch+1], cmap='gray', vmin=img.min(), vmax=img.max())
     #     axes[ch].set_title(f'Channel {ch}')
     #     axes[ch].axis('off')
 
     # plt.show()
-    # return
     
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-        
     out = {
+        "opacity": opacity_image,
         "render": rendered_image,
         "viewspace_points": screenspace_points,
         "visibility_filter" : radii > 0,
@@ -185,28 +201,60 @@ def render_bcoeffs(
 
     return out
 
+def mu_lin_photo(E_keV: torch.Tensor, rho=1.0, k=1e3) -> torch.Tensor:
+    """Linear μ_PE(E) ≈ k·E^{-3}·ρ (empirical)."""
+    return rho * k * E_keV.pow(-3)
 
-def sigma_kn(E: torch.Tensor) -> torch.Tensor:
-    # constants
-    r_e = 2.8179403262e-13           # classical electron radius [cm]
-    sigma_T = 8.0 * torch.pi * r_e**2 / 3.0   # Thomson σ  [cm²]
-    eps = E / 511.0              # hν / mₑc², dimensionless
-    one = torch.ones_like(eps)
+def mu_lin_compton(E_keV: torch.Tensor, rho=1.0) -> torch.Tensor:
+    """Linear μ_C(E) for reference material (includes ρ)."""
+    # --- Klein-Nishina per electron (m²) ---
+    E = E_keV*1e3*1.602176634e-19                   # J
+    eps = E / (511e3*1.602176634e-19)
+    re2 = 7.940792e-30                              # m²
+    term = ((1+eps)/eps**3)*(2*eps*(1+eps)/(1+2*eps)
+            - torch.log1p(2*eps))
+    term += torch.log1p(2*eps)/(2*eps) - (1+3*eps)/(1+2*eps)**2
+    sigma = 2*math.pi*re2*term                      # m² / e⁻
+    # convert to cm⁻¹
+    mu = sigma * 6.02214076e23 * 0.5 * rho * 1e-24  # Z/A≈0.5
+    return mu
 
-    term1 = (1.0 + eps) / eps**3
-    term2 = 2*eps*(1+eps)/(1+2*eps)
-    term3 = torch.log1p(2*eps)       # ln(1+2ε) • numerically stable
-    sigma = sigma_T * term1 * (term2 - term3)
-
-    return sigma
-
-
-def render(bcoeff_image, E):
-    # mu_PE = 5.31e3 * E**(-3) * bcoeff_image[0]
-    mu_PE = xraylib.CS_Photo(6, float(E)) * bcoeff_image[0]
-    # mu_C = sigma_kn(E) * bcoeff_image[1]
-    mu_C = xraylib.CS_KN(float(E)) * bcoeff_image[1]
-
-    image = mu_PE + mu_C
+def render(bcoeff_image, opacity_image=None, E_keV=None):
+    mu_rho_PE = mu_lin_photo(E_keV)
+    mu_rho_C = mu_lin_compton(E_keV)
+    # image = opacity_image * ( bcoeff_image[0] + bcoeff_image[1] )
+    image = bcoeff_image[0] + bcoeff_image[1]
 
     return image.unsqueeze(0)
+
+# def render2(bcoeff_image, opacity_image, E_keV, I0=1.0):
+#     mu_rho_PE = mu_lin_photo(E_keV, rho=opacity_image)
+#     mu_rho_C = mu_lin_compton(E_keV, rho=opacity_image)
+
+#     mu_PE_norm = mu_rho_PE / mu_rho_PE.mean()
+#     mu_Compton_norm = mu_rho_C / mu_rho_C.mean()
+#     image = mu_PE_norm * bcoeff_image[0] + mu_Compton_norm  * bcoeff_image[1]
+#     # image = opacity_image * image
+
+#     return image.unsqueeze(0)
+
+# def render(bcoeff_image, E_keV, gains=None):
+#     a_pe = mu_lin_photo(E_keV)
+#     a_co = mu_lin_compton(E_keV)
+
+#     if gains is not None:
+#         a_pe = a_pe * gains[0]
+#         a_co = a_co * gains[1]
+
+#     proj = a_pe * bcoeff_image[0] + a_co * bcoeff_image[1]   # (H,W)
+#     return proj.unsqueeze(0)                                 # (1,H,W)
+
+
+# def render(bcoeff_image, opacity_image, E_keV, I0=1.0):
+#     mu_rho_PE = mu_lin_photo(E_keV, rho=opacity_image)
+#     mu_rho_C = mu_lin_compton(E_keV, rho=opacity_image)
+#     image = mu_rho_PE * bcoeff_image[0] + mu_rho_C  * bcoeff_image[1]
+
+#     image = I0 * torch.exp(-image)
+
+#     return image.unsqueeze(0)

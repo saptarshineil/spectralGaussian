@@ -14,6 +14,32 @@ from scipy.spatial import cKDTree
 from utils.image_utils import erode
 import numpy as np
 
+def tv2d_loss(img: torch.Tensor, reduction="mean"):
+    """
+    isotropic total-variation on a (C,H,W) tensor
+    """
+    dx = img[..., 1:] - img[..., :-1]
+    dy = img[..., :, 1:] - img[..., :, :-1]
+    out = torch.abs(dx) + torch.abs(dy)
+    return out.mean() if reduction == "mean" else out.sum()
+
+def edge_consistency_loss(basis: torch.Tensor, reduction="mean"):
+    """
+    Encourage PE & Compton to share edges:
+       ||∇c_PE - ∇c_C||² (isotropic)
+    basis : (2,H,W)  – assumes channel 0 = PE, channel 1 = C
+    """
+    dx = basis[..., 1:] - basis[..., :-1]
+    dy = basis[..., :, 1:] - basis[..., :, :-1]
+    diff = (dx[0] - dx[1]) ** 2 + (dy[0] - dy[1]) ** 2
+    return diff.mean() if reduction == "mean" else diff.sum()
+
+def fraction_loss(basis: torch.Tensor, reduction="mean"):
+    """
+    Soft penalty for  c_PE + c_C  ≈  1  per pixel
+    """
+    frac_err = (basis.sum(0) - 1.0) ** 2
+    return frac_err.mean() if reduction == "mean" else frac_err.sum()
 
 # R2-Gaussian
 def tv_3d_loss(vol, reduction="sum"):

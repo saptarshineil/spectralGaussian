@@ -9,7 +9,11 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
+from utils.loss_utils import (
+    l1_loss, ssim, tv_3d_loss,
+    tv2d_loss, edge_consistency_loss, fraction_loss,
+)
+# from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
 from gaussian_renderer import render_bcoeffs, render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -25,6 +29,7 @@ import torchvision
 import numpy as np
 from gaussian_renderer.render_query import query #, render
 
+import matplotlib.pyplot as plt
 
 def training(
     dataset: ModelParams, 
@@ -63,6 +68,7 @@ def training(
     # Set up Gaussians
     gaussians = GaussianModel(
         n_spectra,                  # Spectral
+        # n_bcoeffs + 1,                  # Spectral CT
         n_bcoeffs,                  # Spectral CT
         scale_bound                 # CT
     )
@@ -101,11 +107,13 @@ def training(
     if use_warm_up_iteration:
         combine_spectra = False
         spectral_ids = list(range(1, n_spectra)) if n_spectra > 0 else [0]
-        bcoeff_ids = list(range(1, n_bcoeffs)) if n_bcoeffs > 0 else [0]
     else:
         combine_spectra = True
         spectral_ids = list(range(0, n_spectra)) if n_spectra > 0 else [0]
-        bcoeff_ids = list(range(0, n_bcoeffs)) if n_bcoeffs > 0 else [0]
+
+    # Test
+    # gains = torch.nn.Parameter(torch.tensor([0.1, 1.0], device='cuda'))
+    # opt_gains = torch.optim.Adam([gains], lr=1e-3)
    
     # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
@@ -123,20 +131,46 @@ def training(
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         
         # Track losses
-        total_loss = 0
+        losses_per_energy = []
+        # total_loss = 0
         # total_l1_loss = 0
 
         # ------------ Basis Coefficients ------------
         render_pkg = render_bcoeffs(viewpoint_cam, gaussians, pipe)
-        bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
+        opacity_image, bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
+            render_pkg["opacity"], 
             render_pkg["render"], 
             render_pkg["viewspace_points"], 
             render_pkg["visibility_filter"], 
             render_pkg["radii"], 
         )
-        
+
+        if iteration % 500 == 0:
+            print(bcoeff_image[0].mean().item(), bcoeff_image[1].mean().item())
+
+        # tv2d_reg   = tv2d_loss(bcoeff_image)                       # λ_tv2d
+        # edge_reg   = edge_consistency_loss(bcoeff_image)           # λ_edge
+        # frac_reg   = fraction_loss(bcoeff_image)
+        # print(bcoeff_image[0].min().item(), bcoeff_image[0].max().item(), "|", bcoeff_image[1].min().item(), bcoeff_image[1].max().item())
+        # plt.imshow(bcoeff_image[0].detach().cpu().numpy())
+        # plt.show()
+
+        # xyz = gaussians.get_xyz.detach().cpu().numpy()
+        # print(xyz.min(axis=0), xyz.max(axis=0)) 
+
+        # n_visible = visibility_filter.sum().item()
+        # print("Visible Gaussians :", n_visible, "/", xyz.shape[0])
+
+        # # print the first 20 radii (they are >0 only for visible points)
+        # print("First 20 radii    :", radii[:20].cpu().tolist())
+
+        # pathlengths = precompute_path_length(viewpoint_cam, bbox[0], bbox[1], scene.scene_scale)
+        # print(pathlengths.min().item(), pathlengths.max().item())
+
         # ------------ Energy Levels ------------
-        E = torch.tensor([50., 120.], dtype=torch.float32) 
+        E = torch.tensor([50., 120.], dtype=torch.float32).cuda()
+        I0 = torch.tensor([1088.6769, 1904.3625], dtype=torch.float32).cuda()
+        energy_loss_weights = torch.tensor([0.5, 0.5], dtype=torch.float32).cuda()
 
         # Compute loss per spectral channel
         for spectral_id in spectral_ids:
@@ -144,9 +178,18 @@ def training(
             # gaussians.activate_spectra(spectral_id)
 
             # ---------- Spectral Constants ----------
-
+            
             # ---------- Spectral Beer-Lambert ----------
-            image = render(bcoeff_image, E[spectral_id])
+            # if iteration < 400:
+            #     image = render2(bcoeff_image, opacity_image, E[spectral_id])
+            # else:
+            #     image = render(bcoeff_image, opacity_image, E[spectral_id])
+            # image = render(bcoeff_image, E[spectral_id], gains)
+            image = render(bcoeff_image, opacity_image, E[spectral_id])
+            # image = render(bcoeff_image, opacity_image, E[spectral_id], I0[spectral_id])
+
+            # plt.imshow(image[0].detach().cpu().numpy())
+            # plt.show()
 
             # ---------- Loss ----------
             # L1 Loss
@@ -156,8 +199,8 @@ def training(
             # total_l1_loss = total_l1_loss + Ll1.item()
 
             # DSSIM Loss
-            loss_dssim = (1.0 - ssim(image, gt_image))
-            loss += opt.lambda_dssim * loss_dssim
+            # loss_dssim = (1.0 - ssim(image, gt_image))
+            # loss += opt.lambda_dssim * loss_dssim
 
             # TEMP: removed segmentation
             # 2D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
@@ -200,8 +243,30 @@ def training(
             # for k in losses_extra.keys():
             #     key = k[:k.rfind('_')]
             #     loss += getattr(opt, f'lambda_{key}')* losses_extra[k]
-            total_loss += loss.item()
-        loss.backward()
+            # total_loss += loss.item()
+            # total_loss += loss
+            losses_per_energy.append(loss)
+        
+        # total_loss.backward()
+        data_loss = (energy_loss_weights[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
+        # reg_loss  = (opt.lambda_tv2d * tv2d_reg + opt.lambda_edge * edge_reg + opt.lambda_fraction * frac_reg)
+        # reg_loss  = (opt.lambda_fraction * frac_reg)
+        # total_loss = data_loss + reg_loss
+
+        # reg_gains = 1e-3 * torch.sum((gains - 1)**2)
+        # total_loss = data_loss + reg_gains
+
+        total_loss = data_loss
+        total_loss.backward()
+
+        # with torch.no_grad():
+        #     g0 = gaussians._bcoeffs[0].grad.norm()
+        #     g1 = gaussians._bcoeffs[1].grad.norm()
+        #     if g0 > 0 and g1 > 0:
+        #         scale = (g0 / g1).sqrt()
+        #         gaussians._bcoeffs[0].grad /= scale
+        #         gaussians._bcoeffs[1].grad *= scale
+
 
         iter_end.record()
         
@@ -272,6 +337,7 @@ def training(
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
+                # opt_gains.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
                 # TEMP: removed segmentation
                 # cls_optimizer.step()
@@ -293,6 +359,7 @@ def training(
             
             torch.cuda.empty_cache()
         
+    # print(gains)
 
 def prepare_output_and_logger(args):    
 

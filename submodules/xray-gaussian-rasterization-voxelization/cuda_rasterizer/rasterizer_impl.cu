@@ -201,7 +201,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	const float* bcoeffs,
-	// const float* fractions,
+	const float* opacity,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -214,6 +214,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int mode,
 	const int num_channels,
 	float* out_color,
+	float* out_opacity,
 	int* radii,
 	bool debug)
 {	
@@ -245,6 +246,7 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec3*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
+		opacity,
 		cov3D_precomp,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
@@ -322,7 +324,9 @@ int CudaRasterizer::Rasterizer::forward(
 		bcoeffs,
 		geomState.mus,
 		imgState.n_contrib,
-		out_color), debug)
+		out_color,
+		out_opacity
+	), debug)
 
 	return num_rendered;
 }
@@ -347,9 +351,11 @@ void CudaRasterizer::Rasterizer::backward(
 	char* binning_buffer,
 	char* img_buffer,
 	const float* dL_dpix,
+	const float* dL_dpix_opacity,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dbcoeffs,
+	float* dL_dopacity,
 	float* dL_dmu,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
@@ -389,16 +395,19 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.mus,
 		imgState.n_contrib,
 		dL_dpix,
+		dL_dpix_opacity,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dbcoeffs,
+		dL_dopacity,
 		dL_dmu), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
-	CHECK_CUDA(BACKWARD::preprocess(P, 
+	CHECK_CUDA(BACKWARD::preprocess(
+		P, 
 		(float3*)means3D,
 		radii,
 		(glm::vec3*)scales,

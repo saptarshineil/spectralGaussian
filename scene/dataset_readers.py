@@ -183,22 +183,14 @@ def fetchPly(path):
         normals = np.zeros((num_pts, 3))
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
-def storePly(path, xyz, opacities, n_bcoeffs):
-    # Define the dtype for the structured array
-    # dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-    #         ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
-    #         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
-    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
-            # ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4')
-            ]
-    for i in range(n_bcoeffs):
-        dtype.append(('opacity' + str(i), 'f4'))
+def storePly(path, xyz, opacity, bcoeffs):
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('opacity', 'f4')]
     
-    # normals = np.zeros_like(xyz)
-
+    for i in range(bcoeffs.shape[1]):
+        dtype.append(('bcoeff' + str(i), 'f4'))
+    
     elements = np.empty(xyz.shape[0], dtype=dtype)
-    # attributes = np.concatenate((xyz, normals, opacities), axis=1)
-    attributes = np.concatenate((xyz, opacities), axis=1)
+    attributes = np.concatenate((xyz, opacity, bcoeffs), axis=1)
     elements[:] = list(map(tuple, attributes))
 
     # Create the PlyData object and write to file
@@ -523,6 +515,8 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     # Point cloud and ply_path
+    # n_bcoeffs = n_bcoeffs + 1   # add 1 for 'air' basis coefficient
+
     if random_init:
         n_points = 50000            # copied from R2-Gaussian
         random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
@@ -531,12 +525,12 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
             meta_data["scanner"]["sVoxel"]
         )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
         opacity = np.random.rand(n_points, 1) * random_density_max
-        opacities = np.repeat(opacity, n_bcoeffs, axis=1)
+        bcoeffs = np.full((n_points, n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
         
         ply_path = os.path.join(path, "init_pcd_random.ply")
-        storePly(ply_path, xyz, opacities, n_bcoeffs)
+        storePly(ply_path, xyz, opacity, bcoeffs)
 
-        pcd = BasicPointCloud(points=xyz, opacities=opacities)
+        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
     elif uniform_init:
         points_per_axis = 40
         random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
@@ -553,24 +547,32 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing='ij')
         xyz = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
         opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
-        opacities = np.repeat(opacity, n_bcoeffs, axis=1)
+        bcoeffs = np.full((n_points, n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
 
         ply_path = os.path.join(path, "init_pcd_uniform.ply")
-        storePly(ply_path, xyz, opacities, n_bcoeffs)
+        storePly(ply_path, xyz, opacity, bcoeffs)
 
-        pcd = BasicPointCloud(points=xyz, opacities=opacities)
+        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
     else:
         npy_path = os.path.join(path, "init_pcd.npy")
         point_cloud = np.load(npy_path)
         
         xyz = point_cloud[:, :3]
         opacity = point_cloud[:, 3:4]
-        opacities = np.repeat(opacity, n_bcoeffs, axis=1)
+        
+        # bcoeffs = np.full((point_cloud.shape[0], n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
+        sigma   = 0.05                                # standard deviation of the noise
+        uniform = 1.0 / n_bcoeffs
+
+        bcoeffs = uniform + np.random.normal(0.0, sigma, size=(point_cloud.shape[0], n_bcoeffs))
+        bcoeffs = np.clip(bcoeffs, 1e-6, None)
+        bcoeffs /= bcoeffs.sum(axis=1, keepdims=True)
+        bcoeffs = bcoeffs.astype(np.float32)
 
         ply_path = os.path.join(path, "init_pcd.ply")
-        storePly(ply_path, xyz, opacities, n_bcoeffs)
+        storePly(ply_path, xyz, opacity, bcoeffs)
 
-        pcd = BasicPointCloud(points=xyz, opacities=opacities)
+        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
 
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,
@@ -652,6 +654,7 @@ def readCTameras(meta_data, images_folder, spectral_folder, white_background, rg
             mode=mode,
             scanner_cfg=cam_cfg,
         )
+
         cam_infos.append(cam_info)
     sys.stdout.write("\n")
     return cam_infos

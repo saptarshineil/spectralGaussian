@@ -86,7 +86,7 @@ def render_lightings(model_path, name, iteration, gaussians, sample_num, n_spect
             save_image_raw(os.path.join(lighting_path, '{0:05d}'.format(sampled_index) + ".hdr"), lighting.permute(1,2,0).detach().cpu().numpy())
 
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, classifier, n_spectra):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, classifier, n_spectra, scene):
     # TEMP: removed segmentation
     # colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
     # gt_colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_objects_color")
@@ -125,14 +125,18 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         makedirs(gts_path, exist_ok=True)
 
         E = torch.tensor([50., 120.], dtype=torch.float32)
+        # gains = torch.tensor([0.8316, 1.0000])
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
             results = render_bcoeffs(view, gaussians, pipeline, spectral_id, debug=True)
             torch.cuda.synchronize()
+            opacity_image = results["opacity"]
             bcoeff_image = results["render"]
-
-            rendering = render(bcoeff_image, E[spectral_id])
+            # pathlengths = precompute_path_length(view, scene.bbox[0], scene.bbox[1], scene.scene_scale)
+            # rendering = render(bcoeff_image, opacity_image, E[spectral_id])
+            # rendering = render(bcoeff_image, E[spectral_id], gains)
+            rendering = render(bcoeff_image, opacity_image, E[spectral_id])
             
             gt = view.original_image[0:3, :, :] if spectral_id == 0 else view.spectral_images[spectral_id - 1][0:3,:,:]
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
@@ -158,10 +162,10 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         # classifier.load_state_dict(torch.load(os.path.join(dataset.model_path,"point_cloud","iteration_"+str(scene.loaded_iter)+"_" + str(n_spectra),"classifier.pth")))
 
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, classifier, n_spectra)
+             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, classifier, n_spectra, scene)
 
         if (not skip_test) and (len(scene.getTestCameras()) > 0):
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, classifier, n_spectra)
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, classifier, n_spectra, scene)
 
 if __name__ == "__main__":
     # Set up command line argument parser

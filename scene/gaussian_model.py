@@ -41,37 +41,41 @@ class GaussianModel:
             return symm
         
         # -- Spectral --
-        self.scaling_activation = torch.exp
-        self.scaling_inverse_activation = torch.log
-
-        self.covariance_activation = build_covariance_from_scaling_rotation
-
-        self.opacity_activation = torch.sigmoid
-        self.opacity_inverse_activation = inverse_sigmoid
-        
-        self.rotation_activation = torch.nn.functional.normalize
-        
-        # -- R2-Gaussian --
-        # if self.scale_bound is not None:
-        #     scale_min_bound, scale_max_bound = self.scale_bound
-        #     assert (
-        #         scale_min_bound < scale_max_bound
-        #     ), "scale_min must be smaller than scale_max."
-        #     self.scaling_activation = (
-        #         lambda x: torch.sigmoid(x) * (scale_max_bound - scale_min_bound)
-        #         + scale_min_bound
-        #     )
-        #     self.scaling_inverse_activation = lambda x: inverse_sigmoid(
-        #         torch.relu((x - scale_min_bound) / (scale_max_bound - scale_min_bound))
-        #     )
-        # else:
-        #     self.scaling_activation = torch.exp
-        #     self.scaling_inverse_activation = torch.log
+        # self.scaling_activation = torch.exp
+        # self.scaling_inverse_activation = torch.log
 
         # self.covariance_activation = build_covariance_from_scaling_rotation
 
-        # self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
-        # self.opacity_inverse_activation = inverse_softplus
+        # self.opacity_activation = torch.sigmoid
+        # self.opacity_inverse_activation = inverse_sigmoid
+
+        # self.bcoeffs_activation = torch.softmax
+        # self.bcoeffs_activation = torch.nn.functional.relu 
+        self.bcoeffs_activation = torch.sigmoid 
+
+        self.rotation_activation = torch.nn.functional.normalize
+        
+        # -- R2-Gaussian --
+        if self.scale_bound is not None:
+            scale_min_bound, scale_max_bound = self.scale_bound
+            assert (
+                scale_min_bound < scale_max_bound
+            ), "scale_min must be smaller than scale_max."
+            self.scaling_activation = (
+                lambda x: torch.sigmoid(x) * (scale_max_bound - scale_min_bound)
+                + scale_min_bound
+            )
+            self.scaling_inverse_activation = lambda x: inverse_sigmoid(
+                torch.relu((x - scale_min_bound) / (scale_max_bound - scale_min_bound))
+            )
+        else:
+            self.scaling_activation = torch.exp
+            self.scaling_inverse_activation = torch.log
+
+        self.covariance_activation = build_covariance_from_scaling_rotation
+
+        self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
+        self.opacity_inverse_activation = inverse_softplus
 
         # self.rotation_activation = torch.nn.functional.normalize
 
@@ -81,7 +85,7 @@ class GaussianModel:
         self._xyz = torch.empty(0) # world coordinate
         self._scaling = torch.empty(0) # 3d scale
         self._rotation = torch.empty(0) # rotation expressed in quaternions
-        # self._opacities = []
+        self._opacity = torch.empty(0)
         self._bcoeffs = []
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -138,21 +142,14 @@ class GaussianModel:
     
     @property
     def get_opacity(self):
-        opacity = 0
-        for bcoeff_id in self.bcoeff_ids:
-            # opacity += self._opacities[bcoeff_id]
-            opacity += self._bcoeffs[bcoeff_id]
-        return self.opacity_activation(opacity)
+        return self.opacity_activation(self._opacity)
     
-    def get_bcoeff(self, bcoeff_id):
-        # return self.opacity_activation(self._opacities[bcoeff_id])
-        return self.opacity_activation(self._bcoeffs[bcoeff_id])
-    
+    @property
     def get_bcoeffs(self):
+        # return torch.softmax(torch.cat(self._bcoeffs, dim=1), dim=1)    
         stacked = torch.column_stack([
-            # self.opacity_activation(self._opacities[b])
-            self.opacity_activation(self._bcoeffs[b])
-            for b in range(self.num_basis_coeffs)
+            self.bcoeffs_activation(self._bcoeffs[b])
+            for b in range(len(self._bcoeffs))
         ]) 
         return stacked
     
@@ -194,6 +191,9 @@ class GaussianModel:
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
 
+        opacity = np.asarray(plydata.elements[0]["opacity"])
+        self._opacity = nn.Parameter(torch.tensor(opacity, dtype=torch.float, device="cuda").requires_grad_(True))
+
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
@@ -207,21 +207,21 @@ class GaussianModel:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-        
+
         for bcoeff_id in self.bcoeff_ids:
-            opacities = np.asarray(plydata.elements[0]["opacities_" + str(bcoeff_id)])[..., np.newaxis]
-            # self._opacities.append(nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True)))
-            self._bcoeffs.append(nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True)))
+            bcoeffs = np.asarray(plydata.elements[0]["bcoeffs_" + str(bcoeff_id)])[..., np.newaxis]
+            self._bcoeffs.append(nn.Parameter(torch.tensor(bcoeffs, dtype=torch.float, device="cuda").requires_grad_(True)))
 
     def save_ply(self, path, viewer_fmt=False, spectral_id = 0):
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
-        opacities = []
+        opacity = self._opacity.detach().cpu().numpy()
+        
+        bcoeffs = []
         for bcoeff_id in self.bcoeff_ids:
-            # opacities.append(self._opacities[bcoeff_id].detach().cpu().numpy())
-            opacities.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
-        opacities = np.concatenate(opacities, axis=1)
+            bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
+        bcoeffs = np.concatenate(bcoeffs, axis=1)
         
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
@@ -230,22 +230,22 @@ class GaussianModel:
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
 
-        attributes = np.concatenate((xyz, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, opacity, bcoeffs, scale, rotation), axis=1)
         
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
         pcd_o3d = o3d.t.geometry.PointCloud()
-        pcd_o3d.point["positions"]  = o3d.core.Tensor(xyz,    dtype=o3d.core.Dtype.Float32)
-        pcd_o3d.point["opacities"]  = o3d.core.Tensor(opacities,  dtype=o3d.core.Dtype.Float32)
+        pcd_o3d.point["positions"]  = o3d.core.Tensor(xyz,     dtype=o3d.core.Dtype.Float32)
+        pcd_o3d.point["opacity"]    = o3d.core.Tensor(opacity, dtype=o3d.core.Dtype.Float32)
+        pcd_o3d.point["bcoeffs"]    = o3d.core.Tensor(bcoeffs, dtype=o3d.core.Dtype.Float32)
         return pcd_o3d
     
     def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z']
-        # for i in range(len(self._opacities)):
+        l = ['x', 'y', 'z', 'opacity']
         for i in range(len(self._bcoeffs)):
-            l.append('opacities_{}'.format(i))
+            l.append('bcoeffs_{}'.format(i))
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
@@ -266,10 +266,12 @@ class GaussianModel:
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         
+        fused_opacities = torch.tensor(np.asarray(pcd.opacity)).float().cuda()
+        self._opacity = nn.Parameter(fused_opacities.requires_grad_(True))
+
         for bcoeff_id in self.bcoeff_ids:
-            fused_opacities = torch.tensor(np.asarray(pcd.opacities[:,bcoeff_id])).float().unsqueeze(1).cuda()
-            # self._opacities.append(nn.Parameter(fused_opacities.requires_grad_(True)))
-            self._bcoeffs.append(nn.Parameter(fused_opacities.requires_grad_(True)))
+            fused_bcoeffs = torch.tensor(np.asarray(pcd.bcoeffs[:,bcoeff_id])).float().unsqueeze(1).cuda()
+            self._bcoeffs.append(nn.Parameter(fused_bcoeffs.requires_grad_(True)))
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
@@ -287,75 +289,90 @@ class GaussianModel:
 
         # Define parameter list for basic Gaussian attributes
         # -- Spectral --
-        l = [
-            {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},       
-            {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
-        ]
-
-        for bcoeff_id in list(self.bcoeff_ids):
-            l.extend([  
-                # {'params': [self._opacities[bcoeff_id]], 'lr': training_args.opacity_lr, "name": "opacities_"+str(bcoeff_id)},
-                {'params': [self._bcoeffs[bcoeff_id]], 'lr': training_args.opacity_lr, "name": "opacities_"+str(bcoeff_id)},
-            ])
+        # l = [
+        #     {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},       
+        #     {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
+        #     {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+        # ]
 
         # -- R2-Gaussian --
-        # l = [
-        #     {
-        #         "params": [self._xyz],
-        #         "lr": training_args.position_lr_init * self.spatial_lr_scale,
-        #         "name": "xyz",
-        #     },
-        #     {
-        #         "params": [self._opacity],
-        #         "lr": training_args.opacity_lr_init * self.spatial_lr_scale,
-        #         "name": "opacity",
-        #     },
-        #     {
-        #         "params": [self._scaling],
-        #         "lr": training_args.scaling_lr_init * self.spatial_lr_scale,
-        #         "name": "scaling",
-        #     },
-        #     {
-        #         "params": [self._rotation],
-        #         "lr": training_args.rotation_lr_init * self.spatial_lr_scale,
-        #         "name": "rotation",
-        #     },
-        # ]
+        l = [
+            {
+                "params": [self._xyz],
+                "lr": training_args.position_lr_init * self.spatial_lr_scale,
+                "name": "xyz",
+            },
+            {
+                "params": [self._scaling],
+                "lr": training_args.scaling_lr_init * self.spatial_lr_scale,
+                "name": "scaling",
+            },
+            {
+                "params": [self._rotation],
+                "lr": training_args.rotation_lr_init * self.spatial_lr_scale,
+                "name": "rotation",
+            },
+        ]
+
+        l.extend([  
+            {'params': [self._opacity], 'lr': training_args.opacity_lr_init * self.spatial_lr_scale, "name": "opacity"},
+        ])
+
+        # for bcoeff_id in list(self.bcoeff_ids):
+        #     l.extend([  
+        #         {'params': [self._bcoeffs[bcoeff_id]], 'lr': training_args.opacity_lr_init * self.spatial_lr_scale, "name": "bcoeffs_"+str(bcoeff_id)},
+        #     ])
+
+        l.extend([
+            {'params': [self._bcoeffs[0]], 'lr': training_args.pe_lr_init * self.spatial_lr_scale, "name": "bcoeffs_0"},
+            {'params': [self._bcoeffs[1]], 'lr': training_args.compton_lr_init * self.spatial_lr_scale, "name": "bcoeffs_1"},
+            # {'params': [self._bcoeffs[2]], 'lr': training_args.compton_lr, "name": "bcoeffs_2"},
+        ])
 
         # Init Adam optimizer
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
 
         # Set up learning-rate schedulers
         # -- Spectral --
-        self.xyz_scheduler_args = get_expon_lr_func(
-            lr_init=training_args.position_lr_init*self.spatial_lr_scale,
-            lr_final=training_args.position_lr_final*self.spatial_lr_scale,
-            lr_delay_mult=training_args.position_lr_delay_mult,
-            max_steps=training_args.position_lr_max_steps
-        )
+        # self.xyz_scheduler_args = get_expon_lr_func(
+        #     lr_init=training_args.position_lr_init*self.spatial_lr_scale,
+        #     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+        #     lr_delay_mult=training_args.position_lr_delay_mult,
+        #     max_steps=training_args.position_lr_max_steps
+        # )
 
         # -- R2-Gaussian --
-        # self.xyz_scheduler_args = get_expon_lr_func(
-        #     lr_init=training_args.position_lr_init * self.spatial_lr_scale,
-        #     lr_final=training_args.position_lr_final * self.spatial_lr_scale,
-        #     max_steps=training_args.position_lr_max_steps,
-        # )
-        # self.opacity_scheduler_args = get_expon_lr_func(
-        #     lr_init=training_args.opacity_lr_init * self.spatial_lr_scale,
-        #     lr_final=training_args.opacity_lr_final * self.spatial_lr_scale,
-        #     max_steps=training_args.opacity_lr_max_steps,
-        # )
-        # self.scaling_scheduler_args = get_expon_lr_func(
-        #     lr_init=training_args.scaling_lr_init * self.spatial_lr_scale,
-        #     lr_final=training_args.scaling_lr_final * self.spatial_lr_scale,
-        #     max_steps=training_args.scaling_lr_max_steps,
-        # )
-        # self.rotation_scheduler_args = get_expon_lr_func(
-        #     lr_init=training_args.rotation_lr_init * self.spatial_lr_scale,
-        #     lr_final=training_args.rotation_lr_final * self.spatial_lr_scale,
-        #     max_steps=training_args.rotation_lr_max_steps,
-        # )
+        self.xyz_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.position_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.position_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.position_lr_max_steps,
+        )
+        self.opacity_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.opacity_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.opacity_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.opacity_lr_max_steps,
+        )
+        self.scaling_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.scaling_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.scaling_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.scaling_lr_max_steps,
+        )
+        self.rotation_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.rotation_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.rotation_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.rotation_lr_max_steps,
+        )
+        self.pe_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.pe_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.pe_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.pe_lr_max_steps,
+        )
+
+        self.compton_scheduler_args = get_expon_lr_func(
+            lr_init=training_args.compton_lr_init * self.spatial_lr_scale,
+            lr_final=training_args.compton_lr_final * self.spatial_lr_scale,
+            max_steps=training_args.compton_lr_max_steps,
+        )
         
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
@@ -377,9 +394,12 @@ class GaussianModel:
         # Basic Gaussian
         self._update_learning_rate(iteration, "xyz")
         
-        # self._update_learning_rate(iteration, "opacity") # R2-Gaussian
-        # self._update_learning_rate(iteration, "scaling") # R2-Gaussian
-        # self._update_learning_rate(iteration, "rotation") # R2-Gaussian
+        self._update_learning_rate(iteration, "opacity") # R2-Gaussian
+        self._update_learning_rate(iteration, "scaling") # R2-Gaussian
+        self._update_learning_rate(iteration, "rotation") # R2-Gaussian
+
+        self._update_learning_rate(iteration, "bcoeffs_0")
+        self._update_learning_rate(iteration, "bcoeffs_1")
 
         # Spectral Gaussian
         # parameter_list = []
@@ -388,31 +408,24 @@ class GaussianModel:
         # for param in parameter_list:
         #     lr = self._update_learning_rate(iteration, param)
 
-    # def reset_opacity(self, spectral_id):
-    #     opacities_new = self.opacity_inverse_activation(
-    #         torch.min(self.get_opacity(spectral_id), torch.ones_like(self.get_opacity(spectral_id))*0.01)
-    #     )
-    #     optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacities_" + str(spectral_id))
-    #     self._opacities[spectral_id] = optimizable_tensors["opacities_" + str(spectral_id)]
 
     # ------------------ Reset Opacity ------------------
     def reset_opacity(self):
-        for bcoeff_id in self.bcoeff_ids:
-            opacities_new = self.opacity_inverse_activation(
-                # torch.min(self.get_opacity(spectral_id), torch.ones_like(self.get_opacity(spectral_id))*0.01)
-                torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
-            )
-            optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacities_" + str(bcoeff_id))
-            # self._opacities[bcoeff_id] = optimizable_tensors["opacities_" + str(bcoeff_id)]
-            self._bcoeffs[bcoeff_id] = optimizable_tensors["opacities_" + str(bcoeff_id)]
+        opacity_new = self.opacity_inverse_activation(
+            torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
+        )
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacity_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+        # for bcoeff_id in self.bcoeff_ids:
+        #     bcoeffs_new = self.opacity_inverse_activation(
+        #         torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
+        #     )
+        #     optimizable_tensors = self.replace_tensor_to_optimizer(bcoeffs_new, "bcoeffs_" + str(bcoeff_id))
+        #     self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_" + str(bcoeff_id)]
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            # elif group["name"][-1].isdigit():
-            #     key = group["name"]
-            #     if int(key[key.rindex("_") + 1:]) != spectral_id:
-            #         continue
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 stored_state["exp_avg"] = torch.zeros_like(tensor)
@@ -495,11 +508,11 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_max_radii2D = self.max_radii2D[selected_pts_mask]
-        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
+        new_opacities = self._opacity[selected_pts_mask]
+        self.densification_postfix(new_xyz, new_opacities, new_scaling, new_rotation, new_max_radii2D)
         
         # ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for bcoeff_id in self.bcoeff_ids:
-            # new_opacities = self._opacities[bcoeff_id][selected_pts_mask]
             new_opacities = self._bcoeffs[bcoeff_id][selected_pts_mask]
             self.densification_postfix_per_coeff(new_opacities, bcoeff_id)
 
@@ -525,14 +538,13 @@ class GaussianModel:
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_opacity = self.opacity_inverse_activation(self.get_opacity[selected_pts_mask].repeat(N, 1) * (1 / N))
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
-        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
+        self.densification_postfix(new_xyz, new_opacity, new_scaling, new_rotation, new_max_radii2D)
         
-        # ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for bcoeff_id in self.bcoeff_ids:
-            # new_opacity = self._opacities[bcoeff_id][selected_pts_mask].repeat(N,1)
             new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
             self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
 
@@ -545,23 +557,25 @@ class GaussianModel:
         self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
     # def densification_postfix_per_spectra(self, new_opacities, spectral_id):
-    def densification_postfix_per_coeff(self, new_opacities, bcoeff_id):
+    def densification_postfix_per_coeff(self, new_bcoeffs, bcoeff_id):
         d = {}
-        d.update({"opacities_"+ str(bcoeff_id): new_opacities})
+        d.update({"bcoeffs_"+ str(bcoeff_id): new_bcoeffs})
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d, bcoeff_id)
         # self._opacities[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
-        self._bcoeffs[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
+        self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
 
-    def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D):
+    def densification_postfix(self, new_xyz, new_opacities, new_scaling, new_rotation, new_max_radii2D):
         d = {
             "xyz": new_xyz,
+            "opacity": new_opacities,
             "scaling" : new_scaling,
             "rotation" : new_rotation,
         }
         optimizable_tensors = self.cat_tensors_to_optimizer(d, -1)
         
         self._xyz = optimizable_tensors["xyz"]
+        self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -601,13 +615,14 @@ class GaussianModel:
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
+        self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         
         # ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
         for bcoeff_id in self.bcoeff_ids:
             # self._opacities[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
-            self._bcoeffs[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
+            self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
