@@ -283,8 +283,8 @@ __global__ void preprocessCUDA(
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity[idx] };
-	// conic_opacity[idx] = { conic.x, conic.y, conic.z, 1.0f };
+	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity[idx] };
+	conic_opacity[idx] = { conic.x, conic.y, conic.z, 1.0f };
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 	mus[idx] = cov.w;
 }
@@ -374,6 +374,7 @@ renderCUDA(
 
 			for (int ch = 0; ch < CHANNELS; ++ch)
                 C[ch] += con.w * basis_coeffs[global_id * CHANNELS + ch] * base_alpha;
+                // C[ch] += basis_coeffs[global_id * CHANNELS + ch] * base_alpha;
 
             last_contrib = contrib;
         }

@@ -53,8 +53,8 @@ def query(
     voxelizer = GaussianVoxelizer(voxel_settings=voxel_settings)
 
     means3D = pc.get_xyz
-    # opacity = pc.get_opacity(spectral_id)
-    opacity = pc.get_opacity
+    # opacity = pc.get_opacity_old
+    opacity = pc.get_opacity_at_energy(spectral_id)
 
     scales = None
     rotations = None
@@ -132,7 +132,7 @@ def render(
     means3D = pc.get_xyz
     means2D = screenspace_points
     # opacity = pc.get_opacity(spectral_id)
-    opacity = pc.get_opacity
+    opacity = pc.get_opacity_old
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.

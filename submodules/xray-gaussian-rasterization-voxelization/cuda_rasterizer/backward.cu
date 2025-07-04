@@ -549,26 +549,30 @@ renderCUDA(
 			// pair).
 			// Since we are simple sum, dchannel_dalpha = 1.0
 			// float dL_dalpha = 0.0f;
-			float colour_term = 0.0f;
+			// float colour_term = 0.0f;
+			// const float dLdAlpha = con_o.w * base_alpha;
 			const int global_id = collected_id[j];
+			float channel_grad_sum = 0.f;
 
 			for (int ch = 0; ch < CHANNELS; ch++)
 			{
-				// float dL_dchannel = inside ? dL_dpixels[ch * H * W + pix_id] : 0.f;
-				float dL_dchannel = dL_dpixel[ch];
-				// const float dL_dchannel = dL_dpixel[ch];
 				float bcoeff = basis_coeffs[global_id*CHANNELS + ch];
+				float dL_dchannel = dL_dpixel[ch];
 				// dL_dalpha += bcoeff * dL_dchannel;
-				colour_term += bcoeff * dL_dchannel;
+				// colour_term += bcoeff * dL_dchannel;
 				
 				// atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
-				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * colour_term * dL_dchannel);
+				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
+				channel_grad_sum += bcoeff * dL_dchannel;
 			}
 
 			// dL_dalpha += con_o.w * dL_dpixel_opacity;
-			float opacity_term  = dL_dpixel_opacity;
-			float dL_dalpha   = colour_term + con_o.w * opacity_term;
-			float dL_dopacity_i = base_alpha * colour_term + base_alpha * opacity_term;
+			// float opacity_term  = dL_dpixel_opacity;
+			// float dL_dalpha   = colour_term + con_o.w * opacity_term;
+			// float dL_dopacity_i = base_alpha * colour_term + base_alpha * opacity_term;
+			const float dL_dalpha = channel_grad_sum + dL_dpixel_opacity;
+            const float dL_dopacity_i   = base_alpha * dL_dalpha;
+			atomicAdd(&(dL_dopacity[global_id]), dL_dopacity_i);
 
 			// Helpful reusable temporary variables
 			const float dL_dG = con_o.w * mu * dL_dalpha;
@@ -587,7 +591,6 @@ renderCUDA(
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dopacity[global_id]), dL_dopacity_i);
 			atomicAdd(&(dL_dmu[global_id]), con_o.w * G * dL_dalpha);
 		}
 	}
