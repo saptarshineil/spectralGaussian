@@ -30,6 +30,7 @@ from utils.gaussian_utils import inverse_softplus
 #     build_scaling_rotation,
 # )
 
+from utils.spectralCT_utils import bfunc_PE, bfunc_Compton
 
 class GaussianModel:
 
@@ -44,14 +45,20 @@ class GaussianModel:
         # self.scaling_activation = torch.exp
         # self.scaling_inverse_activation = torch.log
 
-        # self.covariance_activation = build_covariance_from_scaling_rotation
+        self.covariance_activation = build_covariance_from_scaling_rotation
 
         # self.opacity_activation = torch.sigmoid
         # self.opacity_inverse_activation = inverse_sigmoid
 
         # self.bcoeffs_activation = torch.softmax
         # self.bcoeffs_activation = torch.nn.functional.relu 
-        self.bcoeffs_activation = torch.sigmoid 
+        # self.bcoeffs_activation = torch.sigmoid 
+        # self.bcoeffs_activation = torch.ReLu()
+        
+        # self.bcoeffs_activation = torch.nn.Softplus()
+        # self.bcoeffs_inverse_activation = inverse_softplus
+        self.rhos_activation = torch.nn.Softplus()
+        self.rhos_inverse_activation = inverse_softplus
 
         self.rotation_activation = torch.nn.functional.normalize
         
@@ -72,21 +79,26 @@ class GaussianModel:
             self.scaling_activation = torch.exp
             self.scaling_inverse_activation = torch.log
 
-        self.covariance_activation = build_covariance_from_scaling_rotation
+        # self.covariance_activation = build_covariance_from_scaling_rotation
 
-        self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
-        self.opacity_inverse_activation = inverse_softplus
+        # self.opacity_activation = torch.nn.Softplus()  # use softplus for [0, +inf]
+        # self.opacity_inverse_activation = inverse_softplus
 
         # self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, n_spectra : int, n_bcoeffs : int, scale_bound=None):
+    def __init__(self, n_spectra : int, n_bcoeffs : int, E : torch.tensor, scale_bound=None):
 
         # -- General attributes --
         self._xyz = torch.empty(0) # world coordinate
         self._scaling = torch.empty(0) # 3d scale
         self._rotation = torch.empty(0) # rotation expressed in quaternions
-        self._opacity = torch.empty(0)
-        self._bcoeffs = []
+        
+        # self._bcoeffs = []
+        # self._rhos = []
+        self._rhos = torch.empty(0)
+        self._fracs = []
+        self.setup_basis_functions(E)
+        
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -109,6 +121,12 @@ class GaussianModel:
         # Init activation functions
         self.setup_functions()
 
+    def setup_basis_functions(self, E):
+        bfuncs_PE = bfunc_PE(E)
+        bfuncs_C  = bfunc_Compton(E)
+        self._bfuncs = torch.stack([bfuncs_PE, bfuncs_C], dim=1)
+        self._bfuncs.requires_grad_(False)
+
     def set_requires_grad(self, tensor, requires_grad):
             """Returns a new tensor with the specified requires_grad setting."""
             return tensor.detach().clone().requires_grad_(requires_grad)
@@ -118,7 +136,6 @@ class GaussianModel:
             self._xyz,
             self._scaling,
             self._rotation,
-            self._opacities,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -140,18 +157,83 @@ class GaussianModel:
     def get_xyz(self):
         return self._xyz
     
-    @property
-    def get_opacity(self):
-        return self.opacity_activation(self._opacity)
     
+    # @property
+    # def get_opacity(self):
+    #     E = torch.tensor([50., 120.], dtype=torch.float32).cuda()
+    #     coeffs = self.get_bcoeffs
+
+    #     mu_pe  = mu_mass_photo(E).view(1,-1)
+    #     mu_co  = mu_mass_compton(E).view(1, -1)
+    #     return coeffs[:, :1] * mu_pe + coeffs[:, 1:] * mu_co
+    
+    # def get_opacity_at_energy(self, i: int) -> torch.Tensor:
+    #     assert i in (0, 1), "i must be 0 or 1 (energy channel index)"
+    #     E = torch.tensor([50., 120.], dtype=torch.float32).cuda()
+
+    #     mu  = torch.stack([                       # (2,)
+    #         mu_mass_photo  (E[i]),                 # μ_PE(E_i)
+    #         mu_mass_compton(E[i])                  # μ_C (E_i)
+    #     ])
+
+    #     # broadcast: (N,2) * (2,)  →  (N,2)  →  sum over basis
+    #     att = (self.get_bcoeffs * mu).sum(dim=1, keepdim=True)   # (N,1)
+    #     return att
+
+    # def get_density_at_energy(self, E_keV: torch.Tensor) -> torch.Tensor:
+    #     coeffs = self.get_bcoeffs                 
+    #     # mu_pe  = mu_mass_photo(E_keV).unsqueeze(0)
+    #     # mu_co  = mu_mass_compton(E_keV).unsqueeze(0)
+    #     mu_pe  = w_PE(E_keV).unsqueeze(0)
+    #     mu_co  = w_C(E_keV).unsqueeze(0)
+
+    #     basis  = torch.stack([mu_pe, mu_co], dim=2)
+    #     return torch.einsum('nk,kmk->nm', coeffs, basis)
+
+    def get_density_at_energy(self, i):
+        bcoeffs = self.get_bcoeffs
+        bfuncs = self.get_bfuncs(i)
+
+        return (bcoeffs * bfuncs).sum(dim=1, keepdim=True)
+
+    
+    # @property
+    # def get_bcoeffs(self):
+    #     # return torch.softmax(torch.cat(self._bcoeffs, dim=1), dim=1)    
+        
+    #     stacked = torch.column_stack([
+    #         self.bcoeffs_activation(self._bcoeffs[b])
+    #         for b in range(len(self._bcoeffs))
+    #     ]) 
+        
+    #     # stacked = torch.cat((self._bcoeffs[0], self._bcoeffs[1]), dim=1)
+    #     return stacked
     @property
     def get_bcoeffs(self):
-        # return torch.softmax(torch.cat(self._bcoeffs, dim=1), dim=1)    
-        stacked = torch.column_stack([
-            self.bcoeffs_activation(self._bcoeffs[b])
-            for b in range(len(self._bcoeffs))
-        ]) 
-        return stacked
+        # rho = torch.column_stack([
+        #     self.bcoeffs_activation(self._bcoeffs[b])
+        #     for b in range(len(self._bcoeffs))
+        # ])
+        rho = self.get_rhos
+        frac = self.get_fracs
+        return rho * frac
+    
+    @property
+    def get_rhos(self):
+        # rho = torch.column_stack([
+        #     self.rhos_activation(self._rhos[r])
+        #     for r in range(len(self._rhos))
+        # ])
+        rho = self.rhos_activation(self._rhos)
+        return rho
+    
+    @property
+    def get_fracs(self):
+        raw = torch.cat(self._fracs, dim=1)
+        return torch.softmax(raw, dim=1)
+    
+    def get_bfuncs(self, i):
+        return self._bfuncs[i].to(dtype=self.get_bcoeffs.dtype, device=self.get_bcoeffs.device)
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -160,9 +242,11 @@ class GaussianModel:
     def average_params_full_spectra(self):
         self.set_grad_params(self.active_spectra, False)
    
-    def set_grad_params(self, bcoeff_id, state):
-        # self.set_requires_grad(self._opacities[bcoeff_id], state)
-        self.set_requires_grad(self._bcoeffs[bcoeff_id], state)
+    def set_grad_params(self, basis_id: int, state: bool):
+    #     self.set_requires_grad(self._bcoeffs[bcoeff_id], state)
+        # self._rhos[basis_id].requires_grad_(state)
+        self._rhos.requires_grad_(state)
+        self._fracs[basis_id].requires_grad_(state)
 
     def activate_spectra(self, active_spectral_id):
         # self.active_spectra =  active_spectral_id
@@ -191,9 +275,6 @@ class GaussianModel:
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        opacity = np.asarray(plydata.elements[0]["opacity"])
-        self._opacity = nn.Parameter(torch.tensor(opacity, dtype=torch.float, device="cuda").requires_grad_(True))
-
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
@@ -208,21 +289,36 @@ class GaussianModel:
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
+        rhos = np.asarray(plydata.elements[0]["rhos"])[..., np.newaxis]
+        self._rhos = nn.Parameter(torch.tensor(rhos, dtype=torch.float, device="cuda").requires_grad_(True))
         for bcoeff_id in self.bcoeff_ids:
-            bcoeffs = np.asarray(plydata.elements[0]["bcoeffs_" + str(bcoeff_id)])[..., np.newaxis]
-            self._bcoeffs.append(nn.Parameter(torch.tensor(bcoeffs, dtype=torch.float, device="cuda").requires_grad_(True)))
+            # bcoeffs = np.asarray(plydata.elements[0]["bcoeffs_" + str(bcoeff_id)])[..., np.newaxis]
+            # self._bcoeffs.append(nn.Parameter(torch.tensor(bcoeffs, dtype=torch.float, device="cuda").requires_grad_(True)))
+            
+            # rhos = np.asarray(plydata.elements[0]["rhos_" + str(bcoeff_id)])[..., np.newaxis]
+            # self._rhos.append(nn.Parameter(torch.tensor(rhos, dtype=torch.float, device="cuda").requires_grad_(True)))
+            fracs = np.asarray(plydata.elements[0]["fracs_" + str(bcoeff_id)])[..., np.newaxis]
+            self._fracs.append(nn.Parameter(torch.tensor(fracs, dtype=torch.float, device="cuda").requires_grad_(True)))
+        
 
     def save_ply(self, path, viewer_fmt=False, spectral_id = 0):
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
-        opacity = self._opacity.detach().cpu().numpy()
         
-        bcoeffs = []
+        # bcoeffs = []
+        # for bcoeff_id in self.bcoeff_ids:
+        #     bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
+        # bcoeffs = np.concatenate(bcoeffs, axis=1)
+        # rhos = []
+        fracs = []
         for bcoeff_id in self.bcoeff_ids:
-            bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
-        bcoeffs = np.concatenate(bcoeffs, axis=1)
-        
+            # rhos.append(self._rhos[bcoeff_id].detach().cpu().numpy())
+            fracs.append(self._fracs[bcoeff_id].detach().cpu().numpy())
+        # rhos = np.concatenate(rhos, axis=1)
+        fracs = np.concatenate(fracs, axis=1)
+        rhos = self._rhos.detach().cpu().numpy()
+
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
@@ -230,7 +326,8 @@ class GaussianModel:
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
 
-        attributes = np.concatenate((xyz, opacity, bcoeffs, scale, rotation), axis=1)
+        # attributes = np.concatenate((xyz, bcoeffs, fracs, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, rhos, fracs, scale, rotation), axis=1)
         
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
@@ -238,14 +335,20 @@ class GaussianModel:
 
         pcd_o3d = o3d.t.geometry.PointCloud()
         pcd_o3d.point["positions"]  = o3d.core.Tensor(xyz,     dtype=o3d.core.Dtype.Float32)
-        pcd_o3d.point["opacity"]    = o3d.core.Tensor(opacity, dtype=o3d.core.Dtype.Float32)
-        pcd_o3d.point["bcoeffs"]    = o3d.core.Tensor(bcoeffs, dtype=o3d.core.Dtype.Float32)
+        # pcd_o3d.point["bcoeffs"]    = o3d.core.Tensor(bcoeffs, dtype=o3d.core.Dtype.Float32)
+        pcd_o3d.point["rhos"]    = o3d.core.Tensor(rhos, dtype=o3d.core.Dtype.Float32)
+        pcd_o3d.point["fracs"]      = o3d.core.Tensor(fracs, dtype=o3d.core.Dtype.Float32)
         return pcd_o3d
     
     def construct_list_of_attributes(self):
-        l = ['x', 'y', 'z', 'opacity']
-        for i in range(len(self._bcoeffs)):
-            l.append('bcoeffs_{}'.format(i))
+        # l = ['x', 'y', 'z']
+        # for i in range(len(self._bcoeffs)):
+        #     l.append('bcoeffs_{}'.format(i))
+        l = ['x', 'y', 'z', 'rhos']
+        # for i in range(len(self._rhos)):
+        #     l.append('rhos_{}'.format(i))
+        for i in range(len(self._fracs)):
+            l.append('fracs_{}'.format(i))
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
@@ -260,18 +363,28 @@ class GaussianModel:
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        # scales = torch.log(torch.sqrt(dist2) * 0.5)[...,None].repeat(1, 3)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         
-        fused_opacities = torch.tensor(np.asarray(pcd.opacity)).float().cuda()
-        self._opacity = nn.Parameter(fused_opacities.requires_grad_(True))
-
+        # for bcoeff_id in self.bcoeff_ids:
+        #     fused_bcoeffs = torch.tensor(np.asarray(pcd.bcoeffs[:,bcoeff_id])).float().unsqueeze(1).cuda()
+        #     self._bcoeffs.append(nn.Parameter(fused_bcoeffs.requires_grad_(True)))
+        
+        rhos  = torch.tensor(pcd.rhos, dtype=torch.float32, device='cuda')
+        fused_rhos = self.rhos_inverse_activation(rhos).float().cuda()
+        self._rhos = nn.Parameter(fused_rhos.requires_grad_(True))
         for bcoeff_id in self.bcoeff_ids:
-            fused_bcoeffs = torch.tensor(np.asarray(pcd.bcoeffs[:,bcoeff_id])).float().unsqueeze(1).cuda()
-            self._bcoeffs.append(nn.Parameter(fused_bcoeffs.requires_grad_(True)))
+            # rhos  = torch.tensor(pcd.rhos[:, bcoeff_id], dtype=torch.float32, device='cuda').unsqueeze(1)
+            # fused_rhos = self.rhos_inverse_activation(rhos).float().cuda()
+            # self._rhos.append(nn.Parameter(fused_rhos.requires_grad_(True)))
+            fracs  = torch.tensor(pcd.fracs[:, bcoeff_id], dtype=torch.float32, device='cuda').unsqueeze(1)
+            fused_fracs = torch.log(fracs.clamp_min(1e-6))
+            self._fracs.append(nn.Parameter(fused_fracs.requires_grad_(True)))
+            
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
@@ -314,19 +427,18 @@ class GaussianModel:
             },
         ]
 
-        l.extend([  
-            {'params': [self._opacity], 'lr': training_args.opacity_lr_init * self.spatial_lr_scale, "name": "opacity"},
-        ])
-
-        # for bcoeff_id in list(self.bcoeff_ids):
-        #     l.extend([  
-        #         {'params': [self._bcoeffs[bcoeff_id]], 'lr': training_args.opacity_lr_init * self.spatial_lr_scale, "name": "bcoeffs_"+str(bcoeff_id)},
-        #     ])
-
+        # l.extend([
+        #     {'params': [self._bcoeffs[0]], 'lr': training_args.pe_lr_init * self.spatial_lr_scale, "name": "bcoeffs_0"},
+        #     {'params': [self._bcoeffs[1]], 'lr': training_args.compton_lr_init * self.spatial_lr_scale, "name": "bcoeffs_1"}
+        # ])
         l.extend([
-            {'params': [self._bcoeffs[0]], 'lr': training_args.pe_lr_init * self.spatial_lr_scale, "name": "bcoeffs_0"},
-            {'params': [self._bcoeffs[1]], 'lr': training_args.compton_lr_init * self.spatial_lr_scale, "name": "bcoeffs_1"},
-            # {'params': [self._bcoeffs[2]], 'lr': training_args.compton_lr, "name": "bcoeffs_2"},
+            {'params': [self._rhos], 'lr': training_args.opacity_lr_init * self.spatial_lr_scale, "name": "rhos"},
+        ])
+        l.extend([
+            # {'params': [self._rhos[0]], 'lr': training_args.pe_lr_init * self.spatial_lr_scale, "name": "rhos_0"},
+            # {'params': [self._rhos[1]], 'lr': training_args.compton_lr_init * self.spatial_lr_scale, "name": "rhos_1"},
+            {'params': [self._fracs[0]], 'lr': training_args.pe_lr_init * self.spatial_lr_scale, "name": "fracs_0"},
+            {'params': [self._fracs[1]], 'lr': training_args.compton_lr_init * self.spatial_lr_scale, "name": "fracs_1"}
         ])
 
         # Init Adam optimizer
@@ -347,7 +459,7 @@ class GaussianModel:
             lr_final=training_args.position_lr_final * self.spatial_lr_scale,
             max_steps=training_args.position_lr_max_steps,
         )
-        self.opacity_scheduler_args = get_expon_lr_func(
+        self.rhos_scheduler_args = get_expon_lr_func(
             lr_init=training_args.opacity_lr_init * self.spatial_lr_scale,
             lr_final=training_args.opacity_lr_final * self.spatial_lr_scale,
             max_steps=training_args.opacity_lr_max_steps,
@@ -394,12 +506,18 @@ class GaussianModel:
         # Basic Gaussian
         self._update_learning_rate(iteration, "xyz")
         
-        self._update_learning_rate(iteration, "opacity") # R2-Gaussian
+        # self._update_learning_rate(iteration, "opacity") # R2-Gaussian
         self._update_learning_rate(iteration, "scaling") # R2-Gaussian
         self._update_learning_rate(iteration, "rotation") # R2-Gaussian
 
-        self._update_learning_rate(iteration, "bcoeffs_0")
-        self._update_learning_rate(iteration, "bcoeffs_1")
+        # self._update_learning_rate(iteration, "bcoeffs_0")
+        # self._update_learning_rate(iteration, "bcoeffs_1")
+
+        self._update_learning_rate(iteration, "rhos")
+        # self._update_learning_rate(iteration, "rhos_0")
+        # self._update_learning_rate(iteration, "rhos_1")
+        self._update_learning_rate(iteration, "fracs_0")
+        self._update_learning_rate(iteration, "fracs_1")
 
         # Spectral Gaussian
         # parameter_list = []
@@ -410,18 +528,43 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    def reset_opacity(self):
-        opacity_new = self.opacity_inverse_activation(
-            torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
-        )
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacity_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
-        # for bcoeff_id in self.bcoeff_ids:
-        #     bcoeffs_new = self.opacity_inverse_activation(
-        #         torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)
-        #     )
-        #     optimizable_tensors = self.replace_tensor_to_optimizer(bcoeffs_new, "bcoeffs_" + str(bcoeff_id))
-        #     self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_" + str(bcoeff_id)]
+    # def reset_bcoeffs(self):
+    #     with torch.no_grad():
+    #         for raw in self._bcoeffs:
+    #             coeff_clipped = torch.min(self.bcoeffs_activation(raw), torch.full_like(raw, 0.01))
+    #             raw.copy_(self.bcoeffs_inverse_activation(coeff_clipped))
+
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-2):
+        with torch.no_grad():
+            rho    = self.rhos_activation(self._rhos)
+            rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
+            new_raw = self.rhos_inverse_activation(rho_cl)
+
+            name = f"rhos"
+            self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
+            # for k in range(len(self._rhos)):
+            #     raw    = self._rhos[k]
+            #     rho    = self.rhos_activation(raw)
+            #     rho_cl = torch.min(rho, torch.full_like(rho,
+            #                                             reset_rho))
+            #     new_raw = self.rhos_inverse_activation(rho_cl)
+
+            #     name = f"rhos_{k}"
+            #     self._rhos[k] = self.replace_tensor_to_optimizer(new_raw, name)[name]
+
+            raw_logits = torch.cat(self._fracs, dim=1)
+            probs      = torch.softmax(raw_logits, dim=1)
+
+            probs      = probs.clamp_min(min_frac)
+            probs      = probs / probs.sum(dim=1, keepdim=True)
+            new_logits = torch.log(probs)                              # inverse-softmax
+
+            for k in range(len(self._fracs)):
+                name   = f"fracs_{k}"
+                tensor = new_logits[:, k:k+1]
+                self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+            self.decay_optimizer_moments(decay=0.5)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -464,8 +607,8 @@ class GaussianModel:
 
         # -- R2-Gaussian --
         # Prune gaussians with too small density
-        # prune_mask = (self.get_opacity(self.active_spectra) < min_opacity).squeeze()
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        bcoeffs = self.get_bcoeffs
+        prune_mask = ((bcoeffs[:,0] < min_opacity) & (bcoeffs[:,1] < min_opacity))
         
         # Prune gaussians outside the bbox
         if bbox is not None:
@@ -508,13 +651,21 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_max_radii2D = self.max_radii2D[selected_pts_mask]
-        new_opacities = self._opacity[selected_pts_mask]
-        self.densification_postfix(new_xyz, new_opacities, new_scaling, new_rotation, new_max_radii2D)
+        new_rhos = self._rhos[selected_pts_mask]
+        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
+        # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
+
+        # self._rhos[selected_pts_mask] = new_rhos
         
-        # ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
+        # for bcoeff_id in self.bcoeff_ids:
+        #     new_bcoeffs = self._bcoeffs[bcoeff_id][selected_pts_mask]
+        #     self.densification_postfix_per_coeff(new_bcoeffs, bcoeff_id)
+
         for bcoeff_id in self.bcoeff_ids:
-            new_opacities = self._bcoeffs[bcoeff_id][selected_pts_mask]
-            self.densification_postfix_per_coeff(new_opacities, bcoeff_id)
+            # new_rhos = self._rhos[bcoeff_id][selected_pts_mask]
+            new_fracs = self._fracs[bcoeff_id][selected_pts_mask]
+            # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
+            self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -538,15 +689,23 @@ class GaussianModel:
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_opacity = self.opacity_inverse_activation(self.get_opacity[selected_pts_mask].repeat(N, 1) * (1 / N))
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
-        self.densification_postfix(new_xyz, new_opacity, new_scaling, new_rotation, new_max_radii2D)
+        new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
+
+        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
+        # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
         
+        # for bcoeff_id in self.bcoeff_ids:
+        #     new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
+        #     self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
+
         for bcoeff_id in self.bcoeff_ids:
-            new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
-            self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
+            # new_rhos = self._rhos[bcoeff_id][selected_pts_mask].repeat(N,1)
+            new_fracs = self._fracs[bcoeff_id][selected_pts_mask].repeat(N,1)
+            # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
+            self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
 
         prune_filter = torch.cat(
             (
@@ -556,31 +715,68 @@ class GaussianModel:
         )
         self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
-    # def densification_postfix_per_spectra(self, new_opacities, spectral_id):
-    def densification_postfix_per_coeff(self, new_bcoeffs, bcoeff_id):
+    # def densification_postfix_per_coeff(self, new_bcoeffs, bcoeff_id):
+    #     d = {}
+    #     d.update({"bcoeffs_"+ str(bcoeff_id): new_bcoeffs})
+
+    #     optimizable_tensors = self.cat_tensors_to_optimizer(d, bcoeff_id)
+    #     self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
+    
+    # def densification_postfix_per_coeff(self, new_rhos, new_fracs, bcoeff_id):
+    #     d = {}
+    #     d.update({"rhos_"+ str(bcoeff_id): new_rhos})
+    #     d.update({"fracs_"+ str(bcoeff_id): new_fracs})
+
+    #     optimizable_tensors = self.cat_tensors_to_optimizer(d, bcoeff_id)
+    #     self._rhos[bcoeff_id] = optimizable_tensors["rhos_"+ str(bcoeff_id)]
+    #     self._fracs[bcoeff_id] = optimizable_tensors["fracs_"+ str(bcoeff_id)]
+
+    def densification_postfix_per_coeff(self, new_fracs, bcoeff_id):
         d = {}
-        d.update({"bcoeffs_"+ str(bcoeff_id): new_bcoeffs})
+        d.update({"fracs_"+ str(bcoeff_id): new_fracs})
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d, bcoeff_id)
-        # self._opacities[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
-        self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
+        self._fracs[bcoeff_id] = optimizable_tensors["fracs_"+ str(bcoeff_id)]
 
-    def densification_postfix(self, new_xyz, new_opacities, new_scaling, new_rotation, new_max_radii2D):
+    def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos):
         d = {
             "xyz": new_xyz,
-            "opacity": new_opacities,
             "scaling" : new_scaling,
             "rotation" : new_rotation,
+            "rhos" : new_rhos,
         }
         optimizable_tensors = self.cat_tensors_to_optimizer(d, -1)
         
         self._xyz = optimizable_tensors["xyz"]
-        self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._rhos = optimizable_tensors["rhos"]
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.cat([self.max_radii2D, new_max_radii2D], dim=-1)
+
+        self.decay_optimizer_moments(decay=0.5)
+
+    # def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D):
+    #     d = {
+    #         "xyz": new_xyz,
+    #         "scaling" : new_scaling,
+    #         "rotation" : new_rotation,
+    #     }
+    #     optimizable_tensors = self.cat_tensors_to_optimizer(d, -1)
+        
+    #     self._xyz = optimizable_tensors["xyz"]
+    #     self._scaling = optimizable_tensors["scaling"]
+    #     self._rotation = optimizable_tensors["rotation"]
+    #     self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+    #     self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+    #     self.max_radii2D = torch.cat([self.max_radii2D, new_max_radii2D], dim=-1)
+
+    def decay_optimizer_moments(self, decay: float = 0.5):
+        for state in self.optimizer.state.values():          # one dict per param-tensor
+            if "exp_avg" in state:       # guard against empty states
+                state["exp_avg"]    *= decay
+                state["exp_avg_sq"] *= decay
 
     def cat_tensors_to_optimizer(self, tensors_dict, bcoeff_id):
         optimizable_tensors = {} 
@@ -615,14 +811,16 @@ class GaussianModel:
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
-        self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         
-        # ids = [self.active_spectra] if only_active_spectra else self.spectral_ids
+        # for bcoeff_id in self.bcoeff_ids:
+        #     self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
+        
+        self._rhos = optimizable_tensors["rhos"]
         for bcoeff_id in self.bcoeff_ids:
-            # self._opacities[bcoeff_id] = optimizable_tensors["opacities_"+ str(bcoeff_id)]
-            self._bcoeffs[bcoeff_id] = optimizable_tensors["bcoeffs_"+ str(bcoeff_id)]
+            # self._rhos[bcoeff_id] = optimizable_tensors["rhos_"+ str(bcoeff_id)]
+            self._fracs[bcoeff_id] = optimizable_tensors["fracs_"+ str(bcoeff_id)]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self.denom = self.denom[valid_points_mask]

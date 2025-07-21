@@ -11,7 +11,7 @@ from scene import Scene
 import os
 from tqdm import tqdm
 from os import makedirs
-from gaussian_renderer import render_bcoeffs, render, render_lighting
+from gaussian_renderer import render_mu, render_lighting
 import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
@@ -23,6 +23,8 @@ import colorsys
 import cv2
 from sklearn.decomposition import PCA
 from scene.NVDIFFREC.util import save_image_raw
+
+import matplotlib.pyplot as plt
 
 def feature_to_rgb(features):
     # Input features shape: (16, H, W)
@@ -124,21 +126,44 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
-        E = torch.tensor([50., 120.], dtype=torch.float32)
-        # gains = torch.tensor([0.8316, 1.0000])
+        # I0 = torch.tensor([13053.1, 13053.1], dtype=torch.float32).cuda()
+        # c = torch.tensor([290 / 50, 200 / 50], dtype=torch.float32).cuda()
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
-            results = render_bcoeffs(view, gaussians, pipeline, spectral_id, debug=True)
-            torch.cuda.synchronize()
-            opacity_image = results["opacity"]
-            bcoeff_image = results["render"]
-            # pathlengths = precompute_path_length(view, scene.bbox[0], scene.bbox[1], scene.scene_scale)
-            # rendering = render(bcoeff_image, opacity_image, E[spectral_id])
-            # rendering = render(bcoeff_image, E[spectral_id], gains)
-            rendering = render(bcoeff_image, opacity_image, E[spectral_id])
+            # # results = render_r2(view, gaussians, pipeline)
+            # # torch.cuda.synchronize()
+            # # rendering = results["render"]
+            # results = render_bcoeffs(view, gaussians, pipeline)
+            # torch.cuda.synchronize()
+            # # opacity_image = results["opacity"]
+            # bcoeff_image = results["render"]
             
-            gt = view.original_image[0:3, :, :] if spectral_id == 0 else view.spectral_images[spectral_id - 1][0:3,:,:]
+            # rendering = render(bcoeff_image, E_keV=E[spectral_id])
+
+            results = render_mu(view, gaussians, pipeline, spectral_id)
+            torch.cuda.synchronize()
+
+            rendering = results["render"]
+
+            # rendering = torch.log(I0[spectral_id] * torch.exp(-rendering)) / c[spectral_id]
+
+            # gt = view.original_image[0:3, :, :] if spectral_id == 0 else view.spectral_images[spectral_id - 1][0:3,:,:]
+            gt = view.spectral_images[spectral_id][0:1,:,:]
+            
+            # print(rendering.shape, rendering.min(), rendering.max())
+            # print(gt.shape, gt.min(), gt.max())
+
+            # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+            # img = rendering[0].cpu().detach().numpy()
+            # gt = gt[0].cpu().detach().numpy()
+            # axes[0].imshow(img, cmap='gray', vmin=img.min(), vmax=img.max())
+            # axes[1].imshow(gt, cmap='gray', vmin=gt.min(), vmax=gt.max())
+
+            # plt.show()
+            # return
+
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
@@ -146,10 +171,22 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, n_spectra : int, n_bcoeffs : int):
     
     with torch.no_grad():
-        gaussians = GaussianModel(n_spectra, n_bcoeffs)
-
         scene = Scene(dataset, n_spectra, n_bcoeffs, load_iteration=iteration, shuffle=False)
+        
+        scanner_cfg       = scene.scanner_cfg
+        volume_to_world   = max(scanner_cfg["sVoxel"])
+        scale_bound = None
+        if dataset.scale_min > 0 and dataset.scale_max > 0:
+            scale_bound = np.array([dataset.scale_min,
+                                    dataset.scale_max]) * volume_to_world
+            
+        E = torch.tensor([50., 70.], dtype=torch.float32, device='cuda')
+        
+        gaussians = GaussianModel(n_spectra, n_bcoeffs, E, scale_bound)
+
         scene.init_gaussians(gaussians)
+
+        print("Loaded", gaussians.get_xyz.shape[0], "Gaussians")
 
         # TEMP: removed segmentation
         # num_classes = dataset.num_classes
@@ -176,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--n_spectra", type=int)
+    parser.add_argument("--n_spectra", type=int, default=2)
     parser.add_argument("--n_bcoeffs", type=int, default=2)
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)

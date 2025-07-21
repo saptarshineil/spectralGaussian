@@ -299,9 +299,11 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float*  __restrict__ basis_coeffs,
+	const float*  __restrict__ basis_funcs,
 	const float* __restrict__ mus,
 	uint32_t* __restrict__ n_contrib,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	float* __restrict__ out_bcoeffs)
 {
 	assert(CHANNELS <= MAX_CH);
 
@@ -328,8 +330,8 @@ renderCUDA(
     uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 
-    float C[MAX_CH] = {0.0f};   // per-basis integral
-    // float alpha_acc   = 0.f;   // grey opacity image
+    float C = 0.0f;
+	float C_bcoeffs[MAX_CH] = { 0.0f }; 
 	
 	for (int i = 0; i < rounds && toDo > 0; ++i, toDo -= BLOCK_SIZE)
     {
@@ -363,16 +365,19 @@ renderCUDA(
 			if (power > 0.0f)
 				continue;
 
-            const float base_alpha = con_o.w * mu * __expf(power);
+            // const float base_alpha = __expf(power);
+            const float base_alpha = mu * __expf(power);
             if (base_alpha < 1e-5f) continue;
 
-            // alpha_acc += con.w * base_alpha;
-
             const int global_id = collected_id[j];
+			float density = 0.0f;
 
-			for (int ch = 0; ch < CHANNELS; ++ch)
-                C[ch] += basis_coeffs[global_id * CHANNELS + ch] * base_alpha;
-
+			for (int ch = 0; ch < CHANNELS; ++ch) {
+				density += basis_funcs[ch] * basis_coeffs[global_id*CHANNELS + ch];
+				C_bcoeffs[ch] += base_alpha * basis_coeffs[global_id*CHANNELS + ch]; // Do not multiply with basis function
+			}
+			
+			C += density * base_alpha;
             last_contributor = contributor;
         }
     }
@@ -380,11 +385,10 @@ renderCUDA(
     if (inside)
     {
 		n_contrib[pix_id]  = last_contributor;
-
-		// const float norm = alpha_acc + 1e-6f;
-        for (int ch = 0; ch < CHANNELS; ++ch)
-            out_color[ch * H * W + pix_id] = C[ch];
-			// out_color[ch * H * W + pix_id] = C[ch] / norm;
+		
+		out_color[pix_id] = C;
+		for (int ch = 0; ch < CHANNELS; ch++)
+			out_bcoeffs[ch * H * W + pix_id] = C_bcoeffs[ch];
     }
 }
 
@@ -396,9 +400,11 @@ void FORWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* basis_coeffs,
+	const float* basis_funcs,
 	const float* mus,
 	uint32_t* n_contrib,
-	float* out_color)
+	float* out_color,
+	float* out_bcoeffs)
 {
 	renderCUDA<2> << <grid, block >> > (
 		ranges,
@@ -407,9 +413,11 @@ void FORWARD::render(
 		means2D,
 		conic_opacity,
 		basis_coeffs,
+		basis_funcs,
 		mus,
 		n_contrib,
-		out_color
+		out_color,
+		out_bcoeffs
 	);
 }
 

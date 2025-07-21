@@ -53,8 +53,8 @@ def query(
     voxelizer = GaussianVoxelizer(voxel_settings=voxel_settings)
 
     means3D = pc.get_xyz
-    # opacity = pc.get_opacity_old
-    opacity = pc.get_opacity_at_energy(spectral_id)
+    # opacity = pc.get_density_at_energy(E_keV)
+    opacity = pc.get_density_at_energy(spectral_id)
 
     scales = None
     rotations = None

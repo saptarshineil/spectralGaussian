@@ -201,6 +201,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	const float* bcoeffs,
+	const float* bfuncs,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -213,6 +214,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int mode,
 	const int num_channels,
 	float* out_color,
+	float* out_bcoeffs,
 	int* radii,
 	bool debug)
 {	
@@ -319,9 +321,11 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		bcoeffs,
+		bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
-		out_color
+		out_color,
+		out_bcoeffs
 	), debug)
 
 	return num_rendered;
@@ -334,6 +338,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const int width, int height,
 	const float* means3D,
 	const float* bcoeffs,
+	const float* bfuncs,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -386,6 +391,7 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		bcoeffs,
+		bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
 		dL_dpix,

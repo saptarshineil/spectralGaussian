@@ -15,6 +15,9 @@ import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix, fov2focal, get_rays
 from scipy.spatial.transform import Rotation as R
 
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
 class Camera(nn.Module):
     def __init__(self, 
         colmap_id,
@@ -86,12 +89,6 @@ class Camera(nn.Module):
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
-        self.scanner_cfg = scanner_cfg
-        rays_d = self.get_rays()
-        DSD = float(scanner_cfg["DSD"])
-        self.det_pix_3D = self.camera_center.view(1,1,3) + rays_d * DSD
-        self.view_dir = rays_d[0,0] / rays_d[0,0].norm()
-
         if objects is not None:
             self.objects = objects.to(self.data_device)
         else:
@@ -101,6 +98,14 @@ class Camera(nn.Module):
             self.spectral_images = [spectral_img.to(self.data_device) for spectral_img in spectral_images]
         else:
             self.spectral_images = None
+
+        # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+        # axes[0].imshow(self.spectral_images[0][0].cpu().detach().numpy(), cmap='gray')
+        # axes[1].imshow(self.spectral_images[1][0].cpu().detach().numpy(), cmap='gray')
+
+        # plt.show()
+        # return
         
         if style_transfer:
             self.transfer_image = self.original_image.clone()

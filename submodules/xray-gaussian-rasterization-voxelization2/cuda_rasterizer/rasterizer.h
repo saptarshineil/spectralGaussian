@@ -41,6 +41,7 @@ namespace CudaRasterizer
 			const int width, int height,
 			const float* means3D,
 			const float* bcoeffs,
+			const float* bfuncs,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
@@ -53,6 +54,7 @@ namespace CudaRasterizer
 			const int mode,
 			const int num_channels,
 			float* out_color,
+			float* out_bcoeffs,
 			int* radii = nullptr,
 			bool debug = false);
 
@@ -61,6 +63,7 @@ namespace CudaRasterizer
 			const int width, int height,
 			const float* means3D,
 			const float* bcoeffs,
+			const float* bfuncs,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,

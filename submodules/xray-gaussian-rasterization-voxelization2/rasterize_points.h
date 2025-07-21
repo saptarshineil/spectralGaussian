@@ -15,10 +15,11 @@
 #include <tuple>
 #include <string>
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& means3D,
     const torch::Tensor& bcoeffs,
+    const torch::Tensor& bfuncs,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -40,6 +41,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& means3D,
 	const torch::Tensor& bcoeffs,
+	const torch::Tensor& bfuncs,
 	const torch::Tensor& radii,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,

@@ -12,9 +12,10 @@ from random import randint
 from utils.loss_utils import (
     l1_loss, ssim, tv_3d_loss,
     tv2d_loss, edge_consistency_loss, fraction_loss,
+    weighted_l1_loss, weighted_l2_loss
 )
 # from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
-from gaussian_renderer import render_bcoeffs, render, network_gui
+from gaussian_renderer import render_mu, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -65,15 +66,33 @@ def training(
     if dataset.scale_min > 0 and dataset.scale_max > 0:
         scale_bound = np.array([dataset.scale_min, dataset.scale_max]) * volume_to_world
 
+    # TODO: Read from dateset (or preprocessing)
+    # E = torch.tensor([50.0, 120.0], dtype=torch.float32).cuda()
+    E = torch.tensor([50.0, 70.0], dtype=torch.float32).cuda()
+    # E = torch.tensor([80.0, 140.0], dtype=torch.float32).cuda()
+    # E = torch.tensor([80.0], dtype=torch.float32).cuda()
+    # I0 = torch.tensor([1088.6769, 1904.3625], dtype=torch.float32).cuda()
+    # I0 = torch.tensor([13053.1, 13053.1], dtype=torch.float32).cuda()
+    # I0 = torch.tensor([3814.0469, ], dtype=torch.float32).cuda()
+    # c = torch.tensor([290 / 50, 200 / 50], dtype=torch.float32).cuda()
+    # proj_rescale = torch.tensor([105.0, 56.0], dtype=torch.float32).cuda()
+    # object_scale = 14.0
+    
+    energy_loss_weights = torch.tensor([1.0, 1.0], dtype=torch.float32).cuda()
+
     # Set up Gaussians
     gaussians = GaussianModel(
-        n_spectra,                  # Spectral
-        # n_bcoeffs + 1,                  # Spectral CT
-        n_bcoeffs,                  # Spectral CT
-        scale_bound                 # CT
+        n_spectra,
+        n_bcoeffs,
+        E, 
+        scale_bound
     )
     scene.init_gaussians(gaussians)
     gaussians.training_setup(opt)
+
+    # gain_pe  = torch.nn.Parameter(torch.tensor(0.5, device='cuda'))
+    # gain_cmp = torch.nn.Parameter(torch.tensor(0.5, device='cuda'))
+    # opt_gains = torch.optim.Adam([gain_pe, gain_cmp], lr=1e-2)
 
     # Set up 3D TV loss
     use_tv = opt.lambda_tv > 0
@@ -111,10 +130,6 @@ def training(
         combine_spectra = True
         spectral_ids = list(range(0, n_spectra)) if n_spectra > 0 else [0]
 
-    # Test
-    # gains = torch.nn.Parameter(torch.tensor([0.1, 1.0], device='cuda'))
-    # opt_gains = torch.optim.Adam([gains], lr=1e-3)
-   
     # Start training loop
     for iteration in range(first_iter, opt.iterations + 1):   
         iter_start.record()
@@ -123,7 +138,7 @@ def training(
 
         # Debug
         if (iteration - 1) == debug_from:
-                pipe.debug = True
+            pipe.debug = True
 
         # Get one camera for training
         if not viewpoint_stack:
@@ -135,43 +150,6 @@ def training(
         # total_loss = 0
         # total_l1_loss = 0
 
-        # ------------ Basis Coefficients ------------
-        render_pkg = render_bcoeffs(viewpoint_cam, gaussians, pipe)
-        opacity_image, bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
-            render_pkg["opacity"], 
-            render_pkg["render"], 
-            render_pkg["viewspace_points"], 
-            render_pkg["visibility_filter"], 
-            render_pkg["radii"], 
-        )
-
-        if iteration % 500 == 0:
-            print(bcoeff_image[0].mean().item(), bcoeff_image[1].mean().item())
-
-        # tv2d_reg   = tv2d_loss(bcoeff_image)                       # λ_tv2d
-        # edge_reg   = edge_consistency_loss(bcoeff_image)           # λ_edge
-        # frac_reg   = fraction_loss(bcoeff_image)
-        # print(bcoeff_image[0].min().item(), bcoeff_image[0].max().item(), "|", bcoeff_image[1].min().item(), bcoeff_image[1].max().item())
-        # plt.imshow(bcoeff_image[0].detach().cpu().numpy())
-        # plt.show()
-
-        # xyz = gaussians.get_xyz.detach().cpu().numpy()
-        # print(xyz.min(axis=0), xyz.max(axis=0)) 
-
-        # n_visible = visibility_filter.sum().item()
-        # print("Visible Gaussians :", n_visible, "/", xyz.shape[0])
-
-        # # print the first 20 radii (they are >0 only for visible points)
-        # print("First 20 radii    :", radii[:20].cpu().tolist())
-
-        # pathlengths = precompute_path_length(viewpoint_cam, bbox[0], bbox[1], scene.scene_scale)
-        # print(pathlengths.min().item(), pathlengths.max().item())
-
-        # ------------ Energy Levels ------------
-        E = torch.tensor([50., 120.], dtype=torch.float32).cuda()
-        I0 = torch.tensor([1088.6769, 1904.3625], dtype=torch.float32).cuda()
-        energy_loss_weights = torch.tensor([0.5, 0.5], dtype=torch.float32).cuda()
-
         # Compute loss per spectral channel
         for spectral_id in spectral_ids:
             # Update active spectrum
@@ -180,27 +158,65 @@ def training(
             # ---------- Spectral Constants ----------
             
             # ---------- Spectral Beer-Lambert ----------
-            # if iteration < 400:
-            #     image = render2(bcoeff_image, opacity_image, E[spectral_id])
-            # else:
-            #     image = render(bcoeff_image, opacity_image, E[spectral_id])
-            # image = render(bcoeff_image, E[spectral_id], gains)
-            image = render(bcoeff_image, opacity_image, E[spectral_id])
-            # image = render(bcoeff_image, opacity_image, E[spectral_id], I0[spectral_id])
+            render_pkg = render_mu(viewpoint_cam, gaussians, pipe, spectral_id)
+            image, bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
+                render_pkg["render"], 
+                render_pkg["bcoeffs"], 
+                render_pkg["viewspace_points"], 
+                render_pkg["visibility_filter"], 
+                render_pkg["radii"], 
+            )
 
-            # plt.imshow(image[0].detach().cpu().numpy())
+            # print(bcoeff_image.shape)
+
+            # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+            # axes[0].imshow(bcoeff_image[0].detach().cpu().numpy(), cmap='gray')
+            # axes[1].imshow(bcoeff_image[1].detach().cpu().numpy(), cmap='gray')
+
             # plt.show()
+            # return
 
             # ---------- Loss ----------
             # L1 Loss
-            gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
+            # gt_image = viewpoint_cam.spectral_images[spectral_id - 1].cuda() if spectral_id > 0 else viewpoint_cam.original_image
+            gt_image = viewpoint_cam.spectral_images[spectral_id].cuda()
+
+            if (iteration - 1) % 500 == 0:
+                print(image[0].mean().item() , gt_image[0].mean().item())
+                print(image[0].min().item() , gt_image[0].min().item())
+                print(image[0].max().item() , gt_image[0].max().item())
+                print("---------------")
+
+            # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+            # axes[0].imshow(image[0].detach().cpu().numpy(), cmap='gray', vmin=image.min(), vmax=image.max())
+            # axes[1].imshow(gt_image[0].detach().cpu().numpy(), cmap='gray', vmin=gt_image.min(), vmax=gt_image.max())
+
+            # plt.show()
+
+            # weight = 1.0 / (gt_image.clamp_min_(1.0))
+            # loss_data = weighted_l1_loss(image, gt_image, weight)          # L1
+            # loss_data = weighted_l2_loss(image, gt_image, weight)        # L2
+            # loss = (1.0 - opt.lambda_dssim) * loss_data
+
+            # loss_data = torch.nn.functional.poisson_nll_loss(
+            #             lambda_hat_log,                              # log λ̂
+            #             gt_image,                                    # observed counts
+            #             log_input=True,  full=False,  reduction='mean')
+
+            # loss = (1.0 - opt.lambda_dssim) * loss_data
+
             loss_l1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * loss_l1
+
+            # loss = torch.nn.functional.mse_loss(I_hat, gt_image)
+
             # total_l1_loss = total_l1_loss + Ll1.item()
 
             # DSSIM Loss
-            # loss_dssim = (1.0 - ssim(image, gt_image))
-            # loss += opt.lambda_dssim * loss_dssim
+            loss_dssim = (1.0 - ssim(image, gt_image))
+            loss += opt.lambda_dssim * loss_dssim
 
             # TEMP: removed segmentation
             # 2D Object Loss (here objects can be made per spectra) - used for segmentation / grouping
@@ -249,26 +265,29 @@ def training(
         
         # total_loss.backward()
         data_loss = (energy_loss_weights[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
-        # reg_loss  = (opt.lambda_tv2d * tv2d_reg + opt.lambda_edge * edge_reg + opt.lambda_fraction * frac_reg)
-        # reg_loss  = (opt.lambda_fraction * frac_reg)
-        # total_loss = data_loss + reg_loss
-
-        # reg_gains = 1e-3 * torch.sum((gains - 1)**2)
-        # total_loss = data_loss + reg_gains
 
         total_loss = data_loss
         total_loss.backward()
 
-        # with torch.no_grad():
-        #     g0 = gaussians._bcoeffs[0].grad.norm()
-        #     g1 = gaussians._bcoeffs[1].grad.norm()
-        #     if g0 > 0 and g1 > 0:
-        #         scale = (g0 / g1).sqrt()
-        #         gaussians._bcoeffs[0].grad /= scale
-        #         gaussians._bcoeffs[1].grad *= scale
-
-
         iter_end.record()
+
+        if (iteration - 1) % 500 == 0:
+            # bcoeffs = gaussians._rhos
+            # print("Raw: ", bcoeffs[0].mean().item(), bcoeffs[1].mean().item())
+            # print("Raw: ", bcoeffs.mean().item())
+            bcoeffs_act = gaussians.get_rhos
+            # print("Activated: ", bcoeffs_act[:,0].mean().item(), bcoeffs_act[:,1].mean().item())
+            print("Activated density: ", bcoeffs_act.mean().item())
+            # print("Grad: ", bcoeffs[0].grad.mean().item(), bcoeffs[1].grad.mean().item())
+            # print("Grad: ", bcoeffs.grad.mean().item())
+
+            # fracs = gaussians._fracs
+            # print("Raw: ", fracs[0].mean().item(), fracs[1].mean().item())
+            fracs_act = gaussians.get_fracs
+            print("Activated fractions: ", fracs_act[:,0].mean().item(), fracs_act[:,1].mean().item())
+            # print("Grad: ", fracs[0].grad.mean().item(), fracs[1].grad.mean().item())
+            print("NUM GAUSSIANS: ", gaussians.get_bcoeffs.shape[0])
+            print("-------------------------------------")
         
         with torch.no_grad():
             torch.cuda.empty_cache()
@@ -325,24 +344,25 @@ def training(
                         densify_scale_threshold,
                         bbox,
                     )
-            # if gaussians.get_opacity(spectral_id).shape[0] == 0:
-            if gaussians.get_opacity.shape[0] == 0:
+            # if gaussians.get_opacity.shape[0] == 0:
+            if gaussians.get_bcoeffs.shape[0] == 0:
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                # gaussians.reset_opacity(spectral_id)
-                gaussians.reset_opacity()
+                gaussians.reset_bcoeffs()
 
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
-                # opt_gains.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
                 # TEMP: removed segmentation
                 # cls_optimizer.step()
                 # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
+
+                # opt_gains.step()
+                # opt_gains.zero_grad(set_to_none=True)
             
             if n_spectra > 0:
                 if iteration > 1000 and not combine_spectra:
@@ -359,7 +379,8 @@ def training(
             
             torch.cuda.empty_cache()
         
-    # print(gains)
+    # print(gain_pe)
+    # print(gain_cmp)
 
 def prepare_output_and_logger(args):    
 
@@ -426,7 +447,7 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
 
-    parser.add_argument('--n_spectra', type=int, default=0)
+    parser.add_argument('--n_spectra', type=int, default=2)
     parser.add_argument('--n_bcoeffs', type=int, default=2)
 
     parser.add_argument('--debug_from', type=int, default=-1)

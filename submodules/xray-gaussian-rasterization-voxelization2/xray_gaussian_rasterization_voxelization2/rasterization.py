@@ -27,6 +27,7 @@ def rasterize_gaussians(
     means3D,
     means2D,
     bcoeffs,
+    bfuncs,
     scales,
     rotations,
     cov3Ds_precomp,
@@ -36,6 +37,7 @@ def rasterize_gaussians(
         means3D,
         means2D,
         bcoeffs,
+        bfuncs,
         scales,
         rotations,
         cov3Ds_precomp,
@@ -50,6 +52,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         means3D,
         means2D,
         bcoeffs,
+        bfuncs,
         scales,
         rotations,
         cov3Ds_precomp,
@@ -60,6 +63,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         args = (
             means3D,
             bcoeffs,
+            bfuncs,
             scales,
             rotations,
             raster_settings.scale_modifier,
@@ -83,7 +87,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 args
             )  # Copy them before they can be corrupted
             try:
-                num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = (
+                num_rendered, color, out_bcoeffs, radii, geomBuffer, binningBuffer, imgBuffer = (
                     _C.rasterize_gaussians(*args)
                 )
             except Exception as ex:
@@ -93,7 +97,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 )
                 raise ex
         else:
-            num_rendered, color, radii, geomBuffer, binningBuffer, imgBuffer = (
+            num_rendered, color, out_bcoeffs, radii, geomBuffer, binningBuffer, imgBuffer = (
                 _C.rasterize_gaussians(*args)
             )
 
@@ -104,6 +108,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.save_for_backward(
             means3D,
             bcoeffs,
+            bfuncs,
             scales,
             rotations,
             cov3Ds_precomp,
@@ -112,10 +117,11 @@ class _RasterizeGaussians(torch.autograd.Function):
             binningBuffer,
             imgBuffer,
         )
-        return color, radii
+        return color, out_bcoeffs, radii
 
     @staticmethod
-    def backward(ctx, grad_out_color, _):
+    def backward(ctx, grad_out_color, grad_out_bcoeffs, _):
+        _ = grad_out_bcoeffs
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -124,6 +130,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         (
             means3D,
             bcoeffs,
+            bfuncs,
             scales,
             rotations,
             cov3Ds_precomp,
@@ -137,6 +144,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         args = (
             means3D,
             bcoeffs,
+            bfuncs,
             radii,
             scales,
             rotations,
@@ -192,6 +200,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_means3D,
             grad_means2D,
             grad_bcoeffs,
+            None,
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
@@ -237,6 +246,7 @@ class GaussianRasterizer_ct(nn.Module):
         means3D,
         means2D,
         bcoeffs,
+        bfuncs,
         scales=None,
         rotations=None,
         cov3D_precomp=None,
@@ -263,6 +273,7 @@ class GaussianRasterizer_ct(nn.Module):
             means3D,
             means2D,
             bcoeffs,
+            bfuncs,
             scales,
             rotations,
             cov3D_precomp,

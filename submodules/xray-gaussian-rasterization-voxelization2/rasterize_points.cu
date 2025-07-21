@@ -25,10 +25,11 @@
 #include "utility.h"
 
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& means3D,
     const torch::Tensor& bcoeffs,
+    const torch::Tensor& bfuncs,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -56,7 +57,8 @@ RasterizeGaussiansCUDA(
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
-  torch::Tensor out_color = torch::full({num_channels, H, W}, 0.0, float_opts);
+  torch::Tensor out_color = torch::full({1, H, W}, 0.0, float_opts);
+  torch::Tensor out_bcoeffs = torch::full({num_channels, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   
   torch::Device device(torch::kCUDA);
@@ -79,6 +81,7 @@ RasterizeGaussiansCUDA(
 		W, H,
 		means3D.contiguous().data<float>(),
 		bcoeffs.contiguous().data<float>(), 
+		bfuncs.contiguous().data<float>(), 
 		scales.contiguous().data_ptr<float>(),
 		scale_modifier,
 		rotations.contiguous().data_ptr<float>(),
@@ -92,16 +95,18 @@ RasterizeGaussiansCUDA(
 		mode,
 		num_channels,
 		out_color.contiguous().data<float>(),
+		out_bcoeffs.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
 		debug);
   }
-  return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, out_bcoeffs, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& means3D,
 	const torch::Tensor& bcoeffs,
+	const torch::Tensor& bfuncs,
 	const torch::Tensor& radii,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
@@ -140,6 +145,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  W, H, 
 	  means3D.contiguous().data<float>(),
 	  bcoeffs.contiguous().data<float>(), 
+	  bfuncs.contiguous().data<float>(), 
 	  scales.data_ptr<float>(),
 	  scale_modifier,
 	  rotations.data_ptr<float>(),

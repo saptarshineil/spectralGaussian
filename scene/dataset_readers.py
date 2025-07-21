@@ -14,6 +14,7 @@ from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
+import math
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
@@ -21,6 +22,8 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from glob import glob
 import torch
+
+import matplotlib.pyplot as plt
 
 
 mode_id = {
@@ -183,14 +186,32 @@ def fetchPly(path):
         normals = np.zeros((num_pts, 3))
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
-def storePly(path, xyz, opacity, bcoeffs):
-    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('opacity', 'f4')]
+# def storePly(path, xyz, bcoeffs):
+#     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4')]
     
-    for i in range(bcoeffs.shape[1]):
-        dtype.append(('bcoeff' + str(i), 'f4'))
+#     for i in range(bcoeffs.shape[1]):
+#         dtype.append(('bcoeff' + str(i), 'f4'))
+    
+#     elements = np.empty(xyz.shape[0], dtype=dtype)
+#     attributes = np.concatenate((xyz, bcoeffs), axis=1)
+#     elements[:] = list(map(tuple, attributes))
+
+#     # Create the PlyData object and write to file
+#     vertex_element = PlyElement.describe(elements, 'vertex')
+#     ply_data = PlyData([vertex_element])
+#     ply_data.write(path)
+
+def storePly(path, xyz, rhos, fracs):
+    # dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4')]
+    dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('rhos', 'f4')]
+    
+    # for i in range(rhos.shape[1]):
+    #     dtype.append(('rhos_' + str(i), 'f4'))
+    for i in range(fracs.shape[1]):
+        dtype.append(('fracs_' + str(i), 'f4'))
     
     elements = np.empty(xyz.shape[0], dtype=dtype)
-    attributes = np.concatenate((xyz, opacity, bcoeffs), axis=1)
+    attributes = np.concatenate((xyz, rhos, fracs), axis=1)
     elements[:] = list(map(tuple, attributes))
 
     # Create the PlyData object and write to file
@@ -410,8 +431,10 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
     """Read blender format CT data."""
     print("reading CT dataset")
 
-    reading_dir = "images" if images == None else images
-    images_folder = os.path.join(path, reading_dir)
+    # reading_dir   = 'spectra/spectral_0'
+    # reading_dir = "images" if images == None else images
+    # images_folder = os.path.join(path, reading_dir)
+    images_folder = os.path.join(path, "spectra", "spectral_0")
 
     # Read meta data
     meta_data_path = os.path.join(path, "meta_data.json")
@@ -524,13 +547,15 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         xyz = np.array(meta_data["scanner"]["offOrigin"])[None, ...] + np.array(
             meta_data["scanner"]["sVoxel"]
         )[None, ...] * (np.random.rand(n_points, 3) - 0.5)
-        opacity = np.random.rand(n_points, 1) * random_density_max
+        # opacity = np.random.rand(n_points, 1) * random_density_max
         bcoeffs = np.full((n_points, n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
         
         ply_path = os.path.join(path, "init_pcd_random.ply")
-        storePly(ply_path, xyz, opacity, bcoeffs)
+        # storePly(ply_path, xyz, opacity, bcoeffs)
+        storePly(ply_path, xyz, bcoeffs)
 
-        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
+        # pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
+        pcd = BasicPointCloud(points=xyz, bcoeffs=bcoeffs)
     elif uniform_init:
         points_per_axis = 40
         random_density_max = 1.0    # copied from R2-Gaussian (parameter for random mode)
@@ -546,33 +571,56 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         zs = np.linspace(vol_min[2], vol_max[2], points_per_axis)
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing='ij')
         xyz = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
-        opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
+        # opacity = np.random.rand(xyz.shape[0], 1) * random_density_max
         bcoeffs = np.full((n_points, n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
 
         ply_path = os.path.join(path, "init_pcd_uniform.ply")
-        storePly(ply_path, xyz, opacity, bcoeffs)
+        # storePly(ply_path, xyz, opacity, bcoeffs)
+        storePly(ply_path, xyz, bcoeffs)
 
-        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
+        # pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
+        pcd = BasicPointCloud(points=xyz, bcoeffs=bcoeffs)
     else:
         npy_path = os.path.join(path, "init_pcd.npy")
         point_cloud = np.load(npy_path)
         
         xyz = point_cloud[:, :3]
-        opacity = point_cloud[:, 3:4]
         
-        # bcoeffs = np.full((point_cloud.shape[0], n_bcoeffs), 1.0 / n_bcoeffs, dtype=np.float32)
-        sigma   = 0.05                                # standard deviation of the noise
+        sigma   = 0.05
         uniform = 1.0 / n_bcoeffs
 
-        bcoeffs = uniform + np.random.normal(0.0, sigma, size=(point_cloud.shape[0], n_bcoeffs))
-        bcoeffs = np.clip(bcoeffs, 1e-6, None)
-        bcoeffs /= bcoeffs.sum(axis=1, keepdims=True)
-        bcoeffs = bcoeffs.astype(np.float32)
+        # bcoeffs = uniform + np.random.normal(0.0, sigma, size=(point_cloud.shape[0], n_bcoeffs))
+        # bcoeffs = np.clip(bcoeffs, 1e-6, None)
+        # bcoeffs = bcoeffs.astype(np.float32)
+
+        # ply_path = os.path.join(path, "init_pcd.ply")
+        # storePly(ply_path, xyz, bcoeffs)
+
+        # pcd = BasicPointCloud(points=xyz, bcoeffs=bcoeffs)
+
+        # rhos = uniform + np.random.normal(0.0, sigma, size=(point_cloud.shape[0], n_bcoeffs))
+        # rhos = np.clip(rhos, 1e-6, None)
+        # rhos = rhos.astype(np.float32)
+
+        rhos = point_cloud[:, 3:4]
+
+        # rho = 0.01759
+        # rho = 1.0
+        # rhos = np.full((point_cloud.shape[0], 1), rho, dtype=np.float32)
+        # rhos = np.repeat(rhos, 2, axis=1)
+        print("RHOS: ", rhos.mean())
+
+        # global_frac = np.array([0.01, 0.99], dtype=np.float32)
+        global_frac = np.array([0.0329, 0.9671], dtype=np.float32)
+        # global_frac = np.array([5.770e-3, 1.697e-1], dtype=np.float32)
+        # global_frac = np.array([0.3, 0.7], dtype=np.float32)
+        # global_frac = np.array([0.11, 0.89], dtype=np.float32)
+        fractions = np.tile(global_frac, (point_cloud.shape[0], 1))
 
         ply_path = os.path.join(path, "init_pcd.ply")
-        storePly(ply_path, xyz, opacity, bcoeffs)
+        storePly(ply_path, xyz, rhos, fractions)
 
-        pcd = BasicPointCloud(points=xyz, opacity=opacity, bcoeffs=bcoeffs)
+        pcd = BasicPointCloud(points=xyz, rhos=rhos, fracs=fractions)
 
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,
@@ -587,6 +635,7 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
     )
     
     return scene_info
+
 
 def readCTameras(meta_data, images_folder, spectral_folder, white_background, rgba, scene_scale=1.0):
     """Read camera info."""
@@ -618,24 +667,42 @@ def readCTameras(meta_data, images_folder, spectral_folder, white_background, rg
 
         # Image
         image_name = cam["file_path"]
-        image_path = os.path.join(images_folder, image_name)
-        image = np.load(image_path) * scene_scale
+        # image_path = os.path.join(images_folder, image_name)
+        # image = np.load(image_path) * scene_scale
         # image = (image * 255).astype(np.uint8)  # Convert to uint8
         # image = Image.fromarray(image).convert("RGBA") # Convert to RGBA (grayscale with alpha)
         # if rgba:
         #     image = fix_background_rgba(image, white_background)
 
         # Spectral images
-        spectral_list = sorted(glob(spectral_folder + '/*'))
+        # spectral_list = sorted(glob(spectral_folder + '/*'))
         spectral_images = []
-        for spectra in spectral_list:
-            spectra_img_path = os.path.join(spectral_folder, spectra, image_name)
-            spectra_img = np.load(spectra_img_path) * scene_scale
+        # for spectra in spectral_list:
+        #     spectra_img_path = os.path.join(spectral_folder, spectra, image_name)
+        for spectra_dir in sorted(os.listdir(spectral_folder)):
+            spectra_img_path = os.path.join(spectral_folder, spectra_dir, image_name)
+            # spectra_img = np.load(spectra_img_path) * scene_scale
+            # spectral_images.append(spectra_img)
+
+            spectra_np   = np.load(spectra_img_path).astype(np.float32) * scene_scale  # (H,W)
+            spectra_img  = torch.from_numpy(spectra_np).unsqueeze(0)     # (1,H,W)
+            spectral_images.append(spectra_img)
+
             # spectra_img = (spectra_img * 255).astype(np.uint8)  # Convert to uint8
             # spectra_img = Image.fromarray(spectra_img).convert("RGBA") # Convert to RGBA (grayscale with alpha)
             # if rgba:
             #     spectra_img = fix_background_rgba(spectra_img, white_background)
-            spectral_images.append(spectra_img)
+
+        # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
+
+        # axes[0].imshow(spectral_images[0], cmap='gray')
+        # axes[1].imshow(spectral_images[1], cmap='gray')
+
+        # plt.show()
+        # return
+
+        image = spectral_images[0].clone()
+        image_path = os.path.join(spectral_folder, "spectral_0", image_name)
 
         cam_info = CameraInfoSpecCT(
             uid=idx,

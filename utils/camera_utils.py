@@ -44,7 +44,8 @@ def loadCam(args, id, cam_info, resolution_scale):
     # gt_image = resized_image_rgb[:3, ...]
 
     # -- R2-Gaussian --
-    gt_image = torch.from_numpy(cam_info.image)[None]
+    # gt_image = torch.from_numpy(cam_info.image)[None]
+    gt_image = cam_info.image.float()
     
     # -- Spectral --
     # spectral_images = cam_info.spectral_images
@@ -57,8 +58,9 @@ def loadCam(args, id, cam_info, resolution_scale):
     spectral_images = cam_info.spectral_images
     spectral_images_torch = []
     for spectral_img in spectral_images:
-        s = torch.from_numpy(spectral_img)[None]
-        spectral_images_torch.append(s)
+        # s = torch.from_numpy(spectral_img)[None]
+        # spectral_images_torch.append(s)
+        spectral_images_torch.append(spectral_img.float())
 
     # -- Spectral --
     loaded_mask = None
