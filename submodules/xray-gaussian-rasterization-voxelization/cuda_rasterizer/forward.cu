@@ -201,7 +201,6 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
-	const float* opacity,
 	const float* cov3D_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -283,7 +282,6 @@ __global__ void preprocessCUDA(
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacity[idx] };
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, 1.0f };
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 	mus[idx] = cov.w;
@@ -301,27 +299,27 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float*  __restrict__ basis_coeffs,
+	// const float*  __restrict__ basis_funcs,
 	const float* __restrict__ mus,
 	uint32_t* __restrict__ n_contrib,
-	float* __restrict__ out_color,
-	float* __restrict__ out_opacity)
+	// float* __restrict__ out_color,
+	float* __restrict__ out_bcoeffs)
 {
 	assert(CHANNELS <= MAX_CH);
+
     auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
 	uint32_t pix_id = W * pix.y + pix.x;
-	float2 pixf = { (float)pix.x, (float)pix.y};
+	float2 pixf = { (float)pix.x, (float)pix.y };
 
-	// Check if this thread is associated with a valid pixel or outside.
-	bool inside = pix.x < W&& pix.y < H;
-	// Done threads can help with fetching, but don't rasterize
+	const bool inside = pix.x < W && pix.y < H;
 	bool done = !inside;
 
-    const uint2 range  = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-    int  toDo   = range.y - range.x;
+    const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+    int toDo = range.y - range.x;
     const int rounds = (toDo + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	__shared__ int collected_id[BLOCK_SIZE];
@@ -329,12 +327,12 @@ renderCUDA(
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_mu[BLOCK_SIZE];
 
-    uint32_t contrib = 0, last_contrib = 0;
+    uint32_t contributor = 0;
+	uint32_t last_contributor = 0;
 
-    float C[MAX_CH] = {0.f};   // per-basis integral
-    float alpha_acc   = 0.f;   // grey opacity image
+    // float C = 0.0f;
+	float C_bcoeffs[MAX_CH] = { 0.0f }; 
 	
-	// for (int i = 0; i < rounds; ++i, toDo -= BLOCK_SIZE)
 	for (int i = 0; i < rounds && toDo > 0; ++i, toDo -= BLOCK_SIZE)
     {
 		// End if entire block votes that it is done rasterizing
@@ -355,38 +353,47 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over current batch
-        const int batch = min(BLOCK_SIZE, range.y - (range.x + i * BLOCK_SIZE));
-        for (int j = 0; inside && j < batch; ++j)
+        for (int j = 0; inside && j < min(BLOCK_SIZE, toDo); ++j)
         {
-            ++contrib;
+            ++contributor;
 
-            const float2 d   = { collected_xy[j].x - pixf.x,  collected_xy[j].y - pixf.y };
-            const float4 con = collected_conic_opacity[j];
-            const float  expo = -0.5f*(con.x*d.x*d.x + con.z*d.y*d.y) - con.y*d.x*d.y;
-            if (expo > 0.f) continue;
+            float2 xy = collected_xy[j];
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			float4 con_o = collected_conic_opacity[j];
+			float mu = collected_mu[j];
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			if (power > 0.0f)
+				continue;
 
-            const float base_alpha = collected_mu[j] * __expf(expo);
+            // const float base_alpha = __expf(power);
+            const float base_alpha = mu * __expf(power);
             if (base_alpha < 1e-5f) continue;
 
-            alpha_acc += con.w * base_alpha;
-
             const int global_id = collected_id[j];
+			// float density = 0.0f;
+
+			// for (int ch = 0; ch < CHANNELS; ++ch) {
+			// 	density += basis_funcs[ch] * basis_coeffs[global_id*CHANNELS + ch];
+			// 	C_bcoeffs[ch] += base_alpha * basis_coeffs[global_id*CHANNELS + ch]; // Do not multiply with basis function
+			// }
+
+			// C += density * base_alpha;
 
 			for (int ch = 0; ch < CHANNELS; ++ch)
-                C[ch] += con.w * basis_coeffs[global_id * CHANNELS + ch] * base_alpha;
-                // C[ch] += basis_coeffs[global_id * CHANNELS + ch] * base_alpha;
-
-            last_contrib = contrib;
+            {
+                float coeff = basis_coeffs[global_id*CHANNELS + ch];
+                C_bcoeffs[ch] += base_alpha * coeff;     // **NO basis func**
+            }
+            last_contributor = contributor;
         }
     }
 
-    if (inside)
-    {
-        for (int ch = 0; ch < CHANNELS; ++ch)
-            out_color[ch * H * W + pix_id] = C[ch];
-
-        out_opacity[pix_id] = alpha_acc;
-        n_contrib [pix_id]  = last_contrib;
+    if (inside) {
+		n_contrib[pix_id]  = last_contributor;
+		
+		// out_color[pix_id] = C;
+		for (int ch = 0; ch < CHANNELS; ch++)
+			out_bcoeffs[ch * H * W + pix_id] = C_bcoeffs[ch];
     }
 }
 
@@ -398,22 +405,24 @@ void FORWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* basis_coeffs,
+	// const float* basis_funcs,
 	const float* mus,
 	uint32_t* n_contrib,
-	float* out_color,
-	float* out_opacity)
+	// float* out_color,
+	float* out_bcoeffs)
 {
-	renderCUDA<8> << <grid, block >> > (
+	renderCUDA<2> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H, CHANNELS,
 		means2D,
 		conic_opacity,
 		basis_coeffs,
+		// basis_funcs,
 		mus,
 		n_contrib,
-		out_color,
-		out_opacity
+		// out_color,
+		out_bcoeffs
 	);
 }
 
@@ -424,7 +433,6 @@ void FORWARD::preprocess(
 	const glm::vec3* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
-	const float* opacity,
 	const float* cov3D_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -450,7 +458,6 @@ void FORWARD::preprocess(
 		scales,
 		scale_modifier,
 		rotations,
-		opacity,
 		cov3D_precomp,
 		viewmatrix, 
 		projmatrix,

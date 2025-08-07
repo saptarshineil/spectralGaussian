@@ -14,32 +14,95 @@ from scipy.spatial import cKDTree
 from utils.image_utils import erode
 import numpy as np
 
-def tv2d_loss(img: torch.Tensor, reduction="mean"):
-    """
-    isotropic total-variation on a (C,H,W) tensor
-    """
-    dx = img[..., 1:] - img[..., :-1]
-    dy = img[..., :, 1:] - img[..., :, :-1]
-    out = torch.abs(dx) + torch.abs(dy)
-    return out.mean() if reduction == "mean" else out.sum()
+# def joint_tv(bcoeff_image, reduction='mean', eps=1e-6):
+#     """
+#     Total Variation on the basis‑maps, encourage PE & Compton to share edges.
+#     bcoeff_image : (C,H,W). channel 0 = PE, channel 1 = Compton
+#     """
+#     if bcoeff_image.dim() == 3:
+#         bcoeff_image = bcoeff_image.unsqueeze(0)          # (1,C,H,W)
 
-def edge_consistency_loss(basis: torch.Tensor, reduction="mean"):
-    """
-    Encourage PE & Compton to share edges:
-       ||∇c_PE - ∇c_C||² (isotropic)
-    basis : (2,H,W)  – assumes channel 0 = PE, channel 1 = C
-    """
-    dx = basis[..., 1:] - basis[..., :-1]
-    dy = basis[..., :, 1:] - basis[..., :, :-1]
-    diff = (dx[0] - dx[1]) ** 2 + (dy[0] - dy[1]) ** 2
-    return diff.mean() if reduction == "mean" else diff.sum()
+#     dx = bcoeff_image[..., :-1, 1:]  - bcoeff_image[..., :-1, :-1]   # (B,C,H-1,W-1)
+#     dy = bcoeff_image[..., 1:, :-1]  - bcoeff_image[..., :-1, :-1]   # (B,C,H-1,W-1)
 
-def fraction_loss(basis: torch.Tensor, reduction="mean"):
+#     grad_mag = torch.sqrt(dx.pow(2).sum(dim=1) +               # (B,H-1,W-1)
+#                           dy.pow(2).sum(dim=1) + eps)
+
+#     if reduction == 'mean':
+#         return grad_mag.mean()
+#     elif reduction == 'sum':
+#         return grad_mag.sum()
+#     else:
+#         return grad_mag
+
+def vector_tv(bcoeff_image, *, kind='fro', reduction='mean', eps=1e-6):
     """
-    Soft penalty for  c_PE + c_C  ≈  1  per pixel
+    Compute a vector‑valued total‑variation penalty on the two basis maps.
+
+    Parameters
+    ----------
+    bcoeff_image : (C,H,W) or (B,C,H,W) tensor
+        channel 0 = PE, channel 1 = Compton.
+    kind : {'fro','tnv','linf'}
+        'fro'  -> Frobenius / ℓ2 coupling     (your original joint_tv)
+        'tnv'  -> Total Nuclear Variation     (nuclear norm of Jacobian)
+        'linf' -> L∞‑vector TV                (max‑channel magnitude)
+    reduction : {'mean','sum','none'}
     """
-    frac_err = (basis.sum(0) - 1.0) ** 2
-    return frac_err.mean() if reduction == "mean" else frac_err.sum()
+    if bcoeff_image.dim() == 3:                     # add batch dim
+        bcoeff_image = bcoeff_image.unsqueeze(0)
+
+    # centred forward differences ─ matching joint_tv’s convention
+    dx = bcoeff_image[..., :-1, 1:] - bcoeff_image[..., :-1, :-1]   # (B,C,H-1,W-1)
+    dy = bcoeff_image[..., 1:, :-1] - bcoeff_image[..., :-1, :-1]   # (B,C,H-1,W-1)
+
+    if kind == 'fro':                     # √(‖∇x‖²+‖∇y‖²)  (already implemented)
+        val = torch.sqrt(dx.pow(2).sum(dim=1) +          # (B,H-1,W-1)
+                         dy.pow(2).sum(dim=1) + eps)
+
+    elif kind == 'linf':                  # max_c √(dx_c²+dy_c²)
+        grad_mag_per_c = torch.sqrt(dx.pow(2) + dy.pow(2) + eps)     # (B,C,H-1,W-1)
+        val = grad_mag_per_c.max(dim=1)[0]                          # (B,H-1,W-1)
+
+    elif kind == 'tnv':                   # nuclear‑norm ‖J‖_*  (sum σ₁+σ₂)
+        # build Jacobian J = [[dx_PE, dx_Co],
+        #                      [dy_PE, dy_Co]]
+        J = torch.stack([dx.permute(0,2,3,1),          # (B,H-1,W-1,C) -> stack -> (B,H,W,2,C)
+                         dy.permute(0,2,3,1)], dim=-2) # last-2 dim = (2,C)
+        # singular values along (...,2,C) -> (...,min)
+        s = torch.linalg.svdvals(J)                   # (B,H-1,W-1,2)
+        val = s.sum(dim=-1)                           # nuclear norm
+
+    else:
+        raise ValueError(f"Unknown kind '{kind}'")
+
+    if reduction == 'mean':
+        return val.mean()
+    elif reduction == 'sum':
+        return val.sum()
+    else:                               # 'none'
+        return val
+
+
+# -----------------------------------------------------------
+# thin wrappers, so you can import exactly the name you need
+# -----------------------------------------------------------
+def joint_tv(bcoeff_image, reduction='mean', eps=1e-6):
+    """Frobenius‑norm vector TV (original implementation)."""
+    return vector_tv(bcoeff_image, kind='fro',
+                     reduction=reduction, eps=eps)
+
+
+def tnv_tv(bcoeff_image, reduction='mean', eps=1e-6):
+    """Total Nuclear Variation (sum of singular values)."""
+    return vector_tv(bcoeff_image, kind='tnv',
+                     reduction=reduction, eps=eps)
+
+
+def linf_tv(bcoeff_image, reduction='mean', eps=1e-6):
+    """L∞‑vector TV (max channel magnitude)."""
+    return vector_tv(bcoeff_image, kind='linf',
+                     reduction=reduction, eps=eps)
 
 # R2-Gaussian
 def tv_3d_loss(vol, reduction="sum"):

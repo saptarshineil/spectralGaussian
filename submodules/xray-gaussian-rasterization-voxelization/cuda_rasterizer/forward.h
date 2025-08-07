@@ -26,7 +26,6 @@ namespace FORWARD
 		const glm::vec3* scales,
 		const float scale_modifier,
 		const glm::vec4* rotations,
-		const float* opacity,
 		const float* cov3D_precomp,
 		const float* viewmatrix,
 		const float* projmatrix,
@@ -55,10 +54,11 @@ namespace FORWARD
 		const float2* points_xy_image,
 		const float4* conic_opacity,
 		const float* basis_coeffs,
+		// const float* basis_funcs,
 		const float* mus,
 		uint32_t* n_contrib,
-		float* out_color,
-		float* out_opacity
+		// float* out_color,
+		float* out_bcoeffs
 	);
 }
 

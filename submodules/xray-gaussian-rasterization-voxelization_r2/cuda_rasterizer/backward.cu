@@ -399,6 +399,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 // Backward pass of the preprocessing steps, except
 // for the covariance computation and inversion
 // (those are handled by a previous kernel call)
+template<int C>
 __global__ void preprocessCUDA(
 	int P,
 	const float3* means,
@@ -443,26 +444,22 @@ __global__ void preprocessCUDA(
 }
 
 // Backward version of the rendering procedure.
-template <uint32_t MAX_CH>
+template <uint32_t C>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H, int CHANNELS,
+	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
-	const float* __restrict__ basis_coeffs,
-	const float* __restrict__ basis_funcs,
 	const float* __restrict__ mus,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
-	float* __restrict__ dL_dbcoeffs,
+	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dmu)
 {	
-	assert(CHANNELS <= MAX_CH);
-
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -470,13 +467,15 @@ renderCUDA(
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
 	const uint32_t pix_id = W * pix.y + pix.x;
-	float2 pixf = { (float)pix.x, (float)pix.y };
+	float2 pixf = { (float)pix.x, (float)pix.y};
 
-	const bool inside = pix.x < W && pix.y < H;
-
+	const bool inside = pix.x < W&& pix.y < H;
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+
+	bool done = !inside;
 	int toDo = range.y - range.x;
-	const int rounds = (toDo + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
@@ -487,18 +486,19 @@ renderCUDA(
 	// Gaussian is known from each pixel from the forward.
 	uint32_t contributor = toDo;
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
-
-	float dL_dpixel = 0.0f;
-	if (inside)
-		dL_dpixel = dL_dpixels[pix_id];
     
+	float dL_dpixel[C];
+	if (inside)
+		for (int i = 0; i < C; i++)
+			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
-	for (int i = 0; i < rounds && toDo > 0; i++, toDo -= BLOCK_SIZE)
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
 		// and load them in revers order.
@@ -515,7 +515,7 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over Gaussians
-		for (int j = 0; inside && j < min(BLOCK_SIZE, toDo); j++)
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
@@ -534,29 +534,25 @@ renderCUDA(
 
 			const float G = exp(power);
 
-			const float base_alpha = mu * G;
-			if (base_alpha <0.00001f)
+			// const float alpha = min(1.0f, con_o.w * mu * G);
+			const float alpha = con_o.w * mu * G;
+			if (alpha <0.00001f)
 				continue;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
+			// Since we are simple sum, dchannel_dalpha = 1.0
+			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
-
-			float dot_bw = 0.f;
-			for (int ch = 0; ch < CHANNELS; ++ch)
-				dot_bw += basis_coeffs[global_id*CHANNELS + ch] * basis_funcs[ch];
-
-			const float dL_dalpha = dL_dpixel * dot_bw;
-
-			for (int ch = 0; ch < CHANNELS; ch++)
+			for (int ch = 0; ch < C; ch++)
 			{
-				float bfunc = basis_funcs[ch];
-				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], dL_dpixel * base_alpha * bfunc);
+				const float dL_dchannel = dL_dpixel[ch];
+				dL_dalpha += 1.f * dL_dchannel;
 			}
-			
+
 			// Helpful reusable temporary variables
-			const float dL_dG = mu * dL_dalpha;
+			const float dL_dG = con_o.w * mu * dL_dalpha;
 			const float gdx = G * d.x;
 			const float gdy = G * d.y;
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
@@ -572,7 +568,8 @@ renderCUDA(
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dmu[global_id]), G * dL_dalpha);
+			atomicAdd(&(dL_dopacity[global_id]), mu * G * dL_dalpha);
+			atomicAdd(&(dL_dmu[global_id]), con_o.w * G * dL_dalpha);
 		}
 	}
 }
@@ -623,7 +620,7 @@ void BACKWARD::preprocess(
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
 	// matrix gradients to scale and rotation.
-	preprocessCUDA<< < (P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS> << < (P + 255) / 256, 256 >> > (
 		P,
 		(float3*)means3D,
 		radii,
@@ -643,34 +640,30 @@ void BACKWARD::render(
 	const dim3 grid, const dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H, int CHANNELS,
+	int W, int H,
 	const float2* means2D,
 	const float4* conic_opacity,
-	const float* basis_coeffs,
-	const float* basis_funcs,
 	const float* mus,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
-	float* dL_dbcoeffs,
+	float* dL_dopacity,
 	float* dL_dmu
 	)
 {
-	renderCUDA<2> << <grid, block >> >(
+	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
-		W, H, CHANNELS,
+		W, H,
 		means2D,
 		conic_opacity,
-		basis_coeffs,
-		basis_funcs,
 		mus,
 		n_contrib,
 		dL_dpixels,
 		dL_dmean2D,
 		dL_dconic2D,
-		dL_dbcoeffs,
+		dL_dopacity,
 		dL_dmu
 		);
 }

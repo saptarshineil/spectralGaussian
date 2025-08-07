@@ -201,7 +201,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	const float* bcoeffs,
-	const float* opacity,
+	// const float* bfuncs,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -213,8 +213,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	const int mode,
 	const int num_channels,
-	float* out_color,
-	float* out_opacity,
+	// float* out_color,
+	float* out_bcoeffs,
 	int* radii,
 	bool debug)
 {	
@@ -246,7 +246,6 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec3*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
-		opacity,
 		cov3D_precomp,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
@@ -322,10 +321,11 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		bcoeffs,
+		// bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
-		out_color,
-		out_opacity
+		// out_color,
+		out_bcoeffs
 	), debug)
 
 	return num_rendered;
@@ -338,6 +338,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const int width, int height,
 	const float* means3D,
 	const float* bcoeffs,
+	// const float* bfuncs,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -350,12 +351,11 @@ void CudaRasterizer::Rasterizer::backward(
 	char* geom_buffer,
 	char* binning_buffer,
 	char* img_buffer,
-	const float* dL_dpix,
-	const float* dL_dpix_opacity,
+	// const float* dL_dpix,
+	const float* dL_dpix_bcoeffs,
 	float* dL_dmean2D,
 	float* dL_dconic,
 	float* dL_dbcoeffs,
-	float* dL_dopacity,
 	float* dL_dmu,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
@@ -392,14 +392,14 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		bcoeffs,
+		// bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
-		dL_dpix,
-		dL_dpix_opacity,
+		// dL_dpix,
+		dL_dpix_bcoeffs,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dbcoeffs,
-		dL_dopacity,
 		dL_dmu), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance

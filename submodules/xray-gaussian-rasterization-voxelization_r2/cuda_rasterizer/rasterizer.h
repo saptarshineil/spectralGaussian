@@ -40,8 +40,7 @@ namespace CudaRasterizer
 			const int P,
 			const int width, int height,
 			const float* means3D,
-			const float* bcoeffs,
-			const float* bfuncs,
+			const float* opacities,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
@@ -52,9 +51,7 @@ namespace CudaRasterizer
 			const float tan_fovx, float tan_fovy,
 			const bool prefiltered,
 			const int mode,
-			const int num_channels,
 			float* out_color,
-			float* out_bcoeffs,
 			int* radii = nullptr,
 			bool debug = false);
 
@@ -62,8 +59,6 @@ namespace CudaRasterizer
 			const int P, int R,
 			const int width, int height,
 			const float* means3D,
-			const float* bcoeffs,
-			const float* bfuncs,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
@@ -79,14 +74,13 @@ namespace CudaRasterizer
 			const float* dL_dpix,
 			float* dL_dmean2D,
 			float* dL_dconic,
-			float* dL_dbcoeffs,
+			float* dL_dopacity,
 			float* dL_dmu,
 			float* dL_dmean3D,
 			float* dL_dcov3D,
 			float* dL_dscale,
 			float* dL_drot,
 			const int mode,
-			const int num_channels,
 			bool debug);
 	};
 

@@ -200,8 +200,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const int P, 
 	const int width, int height,
 	const float* means3D,
-	const float* bcoeffs,
-	const float* bfuncs,
+	const float* opacities,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -212,9 +211,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	const int mode,
-	const int num_channels,
 	float* out_color,
-	float* out_bcoeffs,
 	int* radii,
 	bool debug)
 {	
@@ -239,6 +236,11 @@ int CudaRasterizer::Rasterizer::forward(
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
+    if (NUM_CHANNELS != 1)
+    {
+        throw std::runtime_error("This version of Diff Gaussian Splatting only handle opacity, not RGB");
+    }
+
 	// Run preprocessing per-Gaussian (transformation, bounding)
 	CHECK_CUDA(FORWARD::preprocess(
 		P, 
@@ -246,6 +248,7 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec3*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
+		opacities,
 		cov3D_precomp,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
@@ -317,16 +320,12 @@ int CudaRasterizer::Rasterizer::forward(
 		tile_grid, block,
 		imgState.ranges,
 		binningState.point_list,
-		width, height, num_channels,
+		width, height,
 		geomState.means2D,
 		geomState.conic_opacity,
-		bcoeffs,
-		bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
-		out_color,
-		out_bcoeffs
-	), debug)
+		out_color), debug)
 
 	return num_rendered;
 }
@@ -337,8 +336,6 @@ void CudaRasterizer::Rasterizer::backward(
 	const int P, int R, 
 	const int width, int height,
 	const float* means3D,
-	const float* bcoeffs,
-	const float* bfuncs,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -354,14 +351,13 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* dL_dpix,
 	float* dL_dmean2D,
 	float* dL_dconic,
-	float* dL_dbcoeffs,
+	float* dL_dopacity,
 	float* dL_dmu,
 	float* dL_dmean3D,
 	float* dL_dcov3D,
 	float* dL_dscale,
 	float* dL_drot,
 	const int mode,
-	const int num_channels,
 	bool debug)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
@@ -387,25 +383,22 @@ void CudaRasterizer::Rasterizer::backward(
 		block,
 		imgState.ranges,
 		binningState.point_list,
-		width, height, num_channels,
+		width, height,
 		geomState.means2D,
 		geomState.conic_opacity,
-		bcoeffs,
-		bfuncs,
 		geomState.mus,
 		imgState.n_contrib,
 		dL_dpix,
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
-		dL_dbcoeffs,
+		dL_dopacity,
 		dL_dmu), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
-	CHECK_CUDA(BACKWARD::preprocess(
-		P, 
+	CHECK_CUDA(BACKWARD::preprocess(P, 
 		(float3*)means3D,
 		radii,
 		(glm::vec3*)scales,

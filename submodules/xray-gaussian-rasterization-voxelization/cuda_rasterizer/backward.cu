@@ -452,17 +452,18 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ basis_coeffs,
+	// const float* __restrict__ basis_funcs,
 	const float* __restrict__ mus,
 	const uint32_t* __restrict__ n_contrib,
-	const float* __restrict__ dL_dpixels,
-	const float* __restrict__ dL_dpixels_opacity,
+	// const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dpixels_bcoeffs,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dbcoeffs,
-	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dmu)
 {	
 	assert(CHANNELS <= MAX_CH);
+
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -470,14 +471,13 @@ renderCUDA(
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
 	const uint32_t pix_id = W * pix.y + pix.x;
-	float2 pixf = { (float)pix.x, (float)pix.y};
+	float2 pixf = { (float)pix.x, (float)pix.y };
 
-	const bool inside = pix.x < W&& pix.y < H;
-	bool done = !inside;
+	const bool inside = pix.x < W && pix.y < H;
 
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 	int toDo = range.y - range.x;
-	int rounds = (toDo + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	const int rounds = (toDo + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
@@ -489,20 +489,21 @@ renderCUDA(
 	uint32_t contributor = toDo;
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	float dL_dpixel[MAX_CH] = { 0.0f };
-	float dL_dpixel_opacity = 0.0f;
-	if (inside)
-		for (int i = 0; i < CHANNELS; i++)
-			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
-		dL_dpixel_opacity = dL_dpixels_opacity[pix_id];
-    
+	// float dL_dpixel = 0.0f;
+	float dL_dpixel_bcoeffs[MAX_CH] = { 0.0f };
+	if (inside) {
+		// dL_dpixel = dL_dpixels[pix_id];
+		for (int ch = 0; ch < CHANNELS; ch++)
+			dL_dpixel_bcoeffs[ch] = dL_dpixels_bcoeffs[ch * H * W + pix_id];
+	}
+
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
-	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	for (int i = 0; i < rounds && toDo > 0; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
 		// and load them in revers order.
@@ -519,8 +520,7 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over Gaussians
-		const int batch_size = min(BLOCK_SIZE, toDo);
-		for (int j = 0; !done && j < batch_size; j++)
+		for (int j = 0; inside && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
@@ -539,7 +539,6 @@ renderCUDA(
 
 			const float G = exp(power);
 
-			// const float alpha = min(1.0f, con_o.w * mu * G);
 			const float base_alpha = mu * G;
 			if (base_alpha <0.00001f)
 				continue;
@@ -547,35 +546,40 @@ renderCUDA(
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
-			// Since we are simple sum, dchannel_dalpha = 1.0
-			// float dL_dalpha = 0.0f;
-			// float colour_term = 0.0f;
-			// const float dLdAlpha = con_o.w * base_alpha;
 			const int global_id = collected_id[j];
-			float channel_grad_sum = 0.f;
 
-			for (int ch = 0; ch < CHANNELS; ch++)
-			{
-				float bcoeff = basis_coeffs[global_id*CHANNELS + ch];
-				float dL_dchannel = dL_dpixel[ch];
-				// dL_dalpha += bcoeff * dL_dchannel;
-				// colour_term += bcoeff * dL_dchannel;
-				
-				// atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
-				atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], con_o.w * base_alpha * dL_dchannel);
-				channel_grad_sum += bcoeff * dL_dchannel;
-			}
+			// float dot_bw = 0.f;
+			// float dot_bw_basis  = 0.f;
+			// for (int ch = 0; ch < CHANNELS; ++ch) {
+			// 	float coeff = basis_coeffs[global_id*CHANNELS + ch];
+			// 	float bfunc = basis_funcs[ch];
+			// 	dot_bw += coeff * bfunc;
+			// 	dot_bw_basis += dL_dpixel_bcoeffs[ch] * coeff * bfunc;
+			// }
 
-			// dL_dalpha += con_o.w * dL_dpixel_opacity;
-			// float opacity_term  = dL_dpixel_opacity;
-			// float dL_dalpha   = colour_term + con_o.w * opacity_term;
-			// float dL_dopacity_i = base_alpha * colour_term + base_alpha * opacity_term;
-			const float dL_dalpha = channel_grad_sum + dL_dpixel_opacity;
-            const float dL_dopacity_i   = base_alpha * dL_dalpha;
-			atomicAdd(&(dL_dopacity[global_id]), dL_dopacity_i);
+			// for (int ch = 0; ch < CHANNELS; ch++)
+			// {
+			// 	float bfunc = basis_funcs[ch];
+			// 	float grad_bcoeff = (dL_dpixel + dL_dpixel_bcoeffs[ch]) * base_alpha * bfunc;
+			// 	atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], grad_bcoeff);
+			// }
 
+			// const float dL_dalpha = dL_dpixel * dot_bw + dot_bw_basis;
+
+			float dL_dalpha = 0.f;
+
+            for (int ch = 0; ch < CHANNELS; ++ch)
+            {
+                float coeff = basis_coeffs[global_id*CHANNELS + ch];
+
+                float grad_coeff = dL_dpixel_bcoeffs[ch] * base_alpha;     // ∂pix/∂coeff = α
+                atomicAdd(&dL_dbcoeffs[global_id*CHANNELS + ch], grad_coeff);
+
+                dL_dalpha += dL_dpixel_bcoeffs[ch] * coeff;           // ∑ch ∂L/∂pix⋅coeff
+            }
+			
 			// Helpful reusable temporary variables
-			const float dL_dG = con_o.w * mu * dL_dalpha;
+			const float dL_dG = mu * dL_dalpha;
 			const float gdx = G * d.x;
 			const float gdy = G * d.y;
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
@@ -591,7 +595,7 @@ renderCUDA(
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dmu[global_id]), con_o.w * G * dL_dalpha);
+			atomicAdd(&(dL_dmu[global_id]), G * dL_dalpha);
 		}
 	}
 }
@@ -666,32 +670,32 @@ void BACKWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* basis_coeffs,
+	// const float* basis_funcs,
 	const float* mus,
 	const uint32_t* n_contrib,
-	const float* dL_dpixels,
-	const float* dL_dpixels_opacity,
+	// const float* dL_dpixels,
+	const float* dL_dpixels_bcoeffs,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dbcoeffs,
-	float* dL_dopacity,
 	float* dL_dmu
 	)
 {
-	renderCUDA<8> << <grid, block >> >(
+	renderCUDA<2> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H, CHANNELS,
 		means2D,
 		conic_opacity,
 		basis_coeffs,
+		// basis_funcs,
 		mus,
 		n_contrib,
-		dL_dpixels,
-		dL_dpixels_opacity,
+		// dL_dpixels,
+		dL_dpixels_bcoeffs,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dbcoeffs,
-		dL_dopacity,
 		dL_dmu
 		);
 }

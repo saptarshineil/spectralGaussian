@@ -15,11 +15,10 @@
 #include <tuple>
 #include <string>
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& means3D,
-    const torch::Tensor& bcoeffs,
-    const torch::Tensor& bfuncs,
+    const torch::Tensor& opacity,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -33,15 +32,11 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const int mode,
-	const int num_channels,
-	const bool debug
-);
+	const bool debug);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& means3D,
-	const torch::Tensor& bcoeffs,
-	const torch::Tensor& bfuncs,
 	const torch::Tensor& radii,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
@@ -58,7 +53,6 @@ RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
 	const int mode,
-	const int num_channels,
 	const bool debug);
 		
 torch::Tensor markVisible(

@@ -16,11 +16,11 @@ import os
 os.path.dirname(os.path.abspath(__file__))
 
 setup(
-    name="xray_gaussian_rasterization_voxelization2",
-    packages=["xray_gaussian_rasterization_voxelization2"],
+    name="xray_gaussian_rasterization_voxelization_r2",
+    packages=["xray_gaussian_rasterization_voxelization_r2"],
     ext_modules=[
         CUDAExtension(
-            name="xray_gaussian_rasterization_voxelization2._C",
+            name="xray_gaussian_rasterization_voxelization_r2._C",
             sources=[
                 "cuda_rasterizer/rasterizer_impl.cu",
                 "cuda_rasterizer/forward.cu",
