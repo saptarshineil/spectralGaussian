@@ -11,7 +11,7 @@ from scene import Scene
 import os
 from tqdm import tqdm
 from os import makedirs
-from gaussian_renderer import render_mu, render_lighting
+from gaussian_renderer import render_mu, render_r2, render_lighting
 import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
@@ -25,6 +25,7 @@ from sklearn.decomposition import PCA
 from scene.NVDIFFREC.util import save_image_raw
 
 import matplotlib.pyplot as plt
+from utils.spectralCT_utils import bfunc_Compton, bfunc_PE
 
 def feature_to_rgb(features):
     # Input features shape: (16, H, W)
@@ -118,6 +119,12 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
     #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
+    E_keV  = torch.tensor([50.0, 120.0], device="cuda")          # (2,)
+    B_E    = torch.stack([                                        # (2 energies , 2 basis)
+                bfunc_PE(E_keV),          # photo-electric basis
+                bfunc_Compton(E_keV)      # Compton basis
+            ], dim=1) 
+
     for spectral_id in list(range(0, n_spectra)):
         gaussians.active_spectra = spectral_id
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_" + str(spectral_id))
@@ -131,20 +138,18 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
-            # # results = render_r2(view, gaussians, pipeline)
-            # # torch.cuda.synchronize()
-            # # rendering = results["render"]
-            # results = render_bcoeffs(view, gaussians, pipeline)
+            # results = render_r2(view, gaussians, pipeline)
             # torch.cuda.synchronize()
-            # # opacity_image = results["opacity"]
-            # bcoeff_image = results["render"]
-            
-            # rendering = render(bcoeff_image, E_keV=E[spectral_id])
+            # rendering = results["render"]
 
-            results = render_mu(view, gaussians, pipeline, spectral_id)
+            results = render_mu(view, gaussians, pipeline)
             torch.cuda.synchronize()
+            # rendering = results["render"]
+            bcoeff_img = results["bcoeffs"]
 
-            rendering = results["render"]
+            rendering = ( bcoeff_img[0] * B_E[spectral_id,0] +
+                     bcoeff_img[1] * B_E[spectral_id,1] ).unsqueeze(0)
+
 
             # rendering = torch.log(I0[spectral_id] * torch.exp(-rendering)) / c[spectral_id]
 
@@ -180,7 +185,8 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
             scale_bound = np.array([dataset.scale_min,
                                     dataset.scale_max]) * volume_to_world
             
-        E = torch.tensor([50., 70.], dtype=torch.float32, device='cuda')
+        # E = torch.tensor([50., 70.], dtype=torch.float32, device='cuda')
+        E = torch.tensor([50., 120.], dtype=torch.float32, device='cuda')
         
         gaussians = GaussianModel(n_spectra, n_bcoeffs, E, scale_bound)
 

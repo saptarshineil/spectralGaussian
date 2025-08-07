@@ -94,6 +94,7 @@ class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         # self.iterations = 30_000
         self.iterations = 5_000
+        # self.iterations = 1000
         # self.iterations = 1
         
         # -- Spectral --> Gaussian basics --
@@ -123,18 +124,23 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.percent_dense = 0.01
         self.opacity_reset_interval = 3000
-        self.lambda_dssim = 0.2              # spectral
-        # self.lambda_dssim = 0.25               # R2
+        # self.opacity_reset_interval = 6000
+        # self.lambda_dssim = 0.005                 # spectral
+        # self.lambda_dssim = 0.25              # R2
+        self.lambda_dssim = 0.80              # Test
         
         # -- Spectral --> densification --
-        self.densification_interval = 100      # spectral + R2 
+        self.densification_interval = 500      # spectral + R2 
         self.densify_from_iter = 500           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
-        self.densify_grad_threshold = 0.0002 # spectral
-        # self.densify_grad_threshold = 5.0e-5   # R2
-        
+        # self.densify_grad_threshold = 0.00050   # R2
+        self.densify_grad_threshold = 0.00025
+        # self.densify_grad_threshold = 0.005
+        self.switch_iter = 1_500
+
         self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
         self.density_min_threshold = 0.00001   # R2
+        # self.density_min_threshold = 0.000001   # R2
 
         # -- Spectral --> segmentation --
         self.reg3d_interval = 2
@@ -159,24 +165,22 @@ class OptimizationParams(ParamGroup):
         self.fix_brdf_lr = 0
 
         # -- R2-Gaussian --
-        self.lambda_tv = 0.05
+        self.lambda_tv = 0.005
         self.tv_vol_size = 32
         self.max_scale = None
         self.max_num_gaussians = 500_000
         self.max_screen_size = None
 
         # -- Test --
-        self.pe_lr_init = 0.001  # PE initial learning rate (higher)
-        self.pe_lr_final = 0.0001
+        self.pe_lr_init = 0.005  # PE initial learning rate (higher)
+        self.pe_lr_final = 0.0005
         self.pe_lr_max_steps = 30000
 
-        self.compton_lr_init = 0.005  # Compton initial learning rate (lower)
-        self.compton_lr_final = 0.0005
+        self.compton_lr_init = 0.001  # Compton initial learning rate (lower)
+        self.compton_lr_final = 0.0001
         self.compton_lr_max_steps = 30000
 
-        self.lambda_tv2d      = 1e-4   # start tiny, scale up ×10 if still noisy
-        self.lambda_edge      = 1e-4
-        self.lambda_fraction  = 1e-4   # set to 0. if you rely on soft-max
+        self.lambda_tv_basis  = 1e-3
 
         super().__init__(parser, "Optimization Parameters")
 

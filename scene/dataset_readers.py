@@ -24,6 +24,7 @@ from glob import glob
 import torch
 
 import matplotlib.pyplot as plt
+from utils.spectralCT_utils import analytic_fraction
 
 
 mode_id = {
@@ -586,8 +587,8 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         
         xyz = point_cloud[:, :3]
         
-        sigma   = 0.05
-        uniform = 1.0 / n_bcoeffs
+        # sigma   = 0.05
+        # uniform = 1.0 / n_bcoeffs
 
         # bcoeffs = uniform + np.random.normal(0.0, sigma, size=(point_cloud.shape[0], n_bcoeffs))
         # bcoeffs = np.clip(bcoeffs, 1e-6, None)
@@ -610,12 +611,11 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
-        # global_frac = np.array([0.01, 0.99], dtype=np.float32)
-        global_frac = np.array([0.0329, 0.9671], dtype=np.float32)
-        # global_frac = np.array([5.770e-3, 1.697e-1], dtype=np.float32)
-        # global_frac = np.array([0.3, 0.7], dtype=np.float32)
-        # global_frac = np.array([0.11, 0.89], dtype=np.float32)
-        fractions = np.tile(global_frac, (point_cloud.shape[0], 1))
+        fractions = analytic_fraction(rhos[:,0])
+        print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
+
+        # global_frac = np.array([0.0329, 0.9671], dtype=np.float32)
+        # fractions = np.tile(global_frac, (point_cloud.shape[0], 1))
 
         ply_path = os.path.join(path, "init_pcd.ply")
         storePly(ply_path, xyz, rhos, fractions)

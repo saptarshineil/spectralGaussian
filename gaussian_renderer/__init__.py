@@ -19,16 +19,18 @@ from utils.graphics_utils import normal_from_depth_image
 from utils.general_utils import flip_align_view
 from scene.NVDIFFREC import extract_env_map
 
-# from xray_gaussian_rasterization_voxelization import (
-#     GaussianRasterizationSettings_ct,
-#     GaussianRasterizer_ct,
-#     GaussianVoxelizationSettings,
-#     GaussianVoxelizer,
-# )
-
-from xray_gaussian_rasterization_voxelization2 import (
+# Spectral CT rasterizer
+from xray_gaussian_rasterization_voxelization import (
     GaussianRasterizationSettings_ct,
     GaussianRasterizer_ct,
+    GaussianVoxelizationSettings,
+    GaussianVoxelizer,
+)
+
+# Old R2-Gaussian rasterizer
+from xray_gaussian_rasterization_voxelization_r2 import (
+    GaussianRasterizationSettings,
+    GaussianRasterizer,
     GaussianVoxelizationSettings,
     GaussianVoxelizer,
 )
@@ -85,7 +87,6 @@ def render_r2(
     viewpoint_camera,
     pc,
     pipe,
-    spectral_id=0,
     scaling_modifier=1.0,
 ):
     """
@@ -208,6 +209,7 @@ def render_mu(
     # -- R2-Gaussian --
     bcoeffs = pc.get_bcoeffs
     bfuncs = pc.get_bfuncs(spectral_id)
+    # bfuncs = torch.tensor([1.0, 1.0], device='cuda')
 
     raster_settings_ct = GaussianRasterizationSettings_ct(
         num_channels = bcoeffs.shape[1], 
@@ -243,11 +245,12 @@ def render_mu(
     # -- R2-Gaussian --
     # rendered_objects = None
 
-    rendered_image, rendered_bcoeffs, radii = rasterizer_ct(
+    # rendered_image, rendered_bcoeffs, radii = rasterizer_ct(
+    rendered_bcoeffs, radii = rasterizer_ct(
         means3D=means3D,
         means2D=means2D,
         bcoeffs=bcoeffs,
-        bfuncs=bfuncs,
+        # bfuncs=bfuncs,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
@@ -272,7 +275,7 @@ def render_mu(
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     out = {
-        "render": rendered_image,
+        # "render": rendered_image,
         "bcoeffs": rendered_bcoeffs,
         "viewspace_points": screenspace_points,
         "visibility_filter" : radii > 0,

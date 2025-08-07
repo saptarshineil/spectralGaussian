@@ -11,11 +11,11 @@ import torch
 from random import randint
 from utils.loss_utils import (
     l1_loss, ssim, tv_3d_loss,
-    tv2d_loss, edge_consistency_loss, fraction_loss,
-    weighted_l1_loss, weighted_l2_loss
+    joint_tv, tnv_tv, linf_tv
 )
 # from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
-from gaussian_renderer import render_mu, network_gui
+from gaussian_renderer import render_r2, render_mu, network_gui
+from utils.spectralCT_utils import bfunc_PE, bfunc_Compton
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -31,6 +31,23 @@ import numpy as np
 from gaussian_renderer.render_query import query #, render
 
 import matplotlib.pyplot as plt
+# from utils.spectralCT_utils import bfunc_PE, bfunc_Compton, closest_material
+import spekpy
+import tifffile as tiff
+
+def _print_grad_stats(tag, g : torch.Tensor):
+    if g is None:
+        print(f"[grad] {tag:<12s} –- no grad yet")
+        return
+    g_abs = g.detach().abs()          # |∂L/∂w|
+    print(
+        f"[grad] {tag:<12s}"
+        f"  mean {g_abs.mean():.3e}"
+        f"  med {g_abs.median():.3e}"
+        f"  p90  {torch.quantile(g_abs, .90):.3e}"
+        f"  max  {g_abs.max():.3e}"
+    )
+
 
 def training(
     dataset: ModelParams, 
@@ -66,20 +83,74 @@ def training(
     if dataset.scale_min > 0 and dataset.scale_max > 0:
         scale_bound = np.array([dataset.scale_min, dataset.scale_max]) * volume_to_world
 
-    # TODO: Read from dateset (or preprocessing)
-    # E = torch.tensor([50.0, 120.0], dtype=torch.float32).cuda()
-    E = torch.tensor([50.0, 70.0], dtype=torch.float32).cuda()
-    # E = torch.tensor([80.0, 140.0], dtype=torch.float32).cuda()
-    # E = torch.tensor([80.0], dtype=torch.float32).cuda()
-    # I0 = torch.tensor([1088.6769, 1904.3625], dtype=torch.float32).cuda()
-    # I0 = torch.tensor([13053.1, 13053.1], dtype=torch.float32).cuda()
-    # I0 = torch.tensor([3814.0469, ], dtype=torch.float32).cuda()
-    # c = torch.tensor([290 / 50, 200 / 50], dtype=torch.float32).cuda()
-    # proj_rescale = torch.tensor([105.0, 56.0], dtype=torch.float32).cuda()
-    # object_scale = 14.0
+    # --------------------------------
+    def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
+        dE   = (E_max - E_min) / N                       # scalar
+        E_k  = torch.linspace(E_min + 0.5*dE,            # mid-points
+                            E_max - 0.5*dE,
+                            steps=N,
+                            device=device,
+                            dtype=dtype)               # (K,)
+        w_k  = torch.full((N,), dE, device=device, dtype=dtype)  # (K,)
+        return E_k, w_k
     
-    energy_loss_weights = torch.tensor([1.0, 1.0], dtype=torch.float32).cuda()
+    def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np):
+        spek = spekpy.Spek(kvp=kvp, th=12)
+        if filt_mat is not None:
+            spek.filter(filt_mat, filt_thick)
+        E_native, S_native = spek.get_spectrum()         # photons / keV / pixel
+        S = np.interp(E_grid_np, E_native, S_native)     # resample
+        S /= np.trapz(S, E_grid_np)                      # normalise
+        return torch.tensor(S*I0, device=E_grid.device, dtype=torch.float32)
+    
+    # dark      = tiff.imread('./testing/spectrum/good_metadata/di0000.tif').astype(np.float32)
+    # flat_pre  = tiff.imread('./testing/spectrum/good_metadata/io0000.tif').astype(np.float32)
+    # flat_post = tiff.imread('./testing/spectrum/good_metadata/io0001.tif').astype(np.float32)
+    # flat      = ((flat_pre - dark) + (flat_post - dark)) / 2.0
+    # I0_high   = flat.mean()                                    # photons / pixel
+    # print("I0_high:", I0_high)
 
+    # dark      = tiff.imread('./testing/spectrum/noisy_metadata/di0000.tif').astype(np.float32)
+    # flat_pre  = tiff.imread('./testing/spectrum/noisy_metadata/io0000.tif').astype(np.float32)
+    # flat_post = tiff.imread('./testing/spectrum/noisy_metadata/io0001.tif').astype(np.float32)
+    # flat      = ((flat_pre - dark) + (flat_post - dark)) / 2.0
+    # I0_low    = flat.mean()                                    # photons / pixel
+    # print("I0_low:", I0_low)
+    
+    # TODO: Read from dateset (or preprocessing)
+    # E = torch.tensor([50.0, 70.0], dtype=torch.float32).cuda()
+    E = torch.tensor([50.0, 120.0], device='cuda', dtype=torch.float32)
+    # E_keV  = np.array([50.0, 120.0], dtype=np.float32)          # low, high
+    N_samples = 32
+    I0_low = 1136.8784583333334
+    I0_high = 2026.8482152777776
+
+    # If dataset is EID (no bins) --> sample full spectrum
+    E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
+    E_grid_np = E_grid.cpu().numpy()
+
+    S_low  = get_scaled_spectrum( 50,  None, 0.0, I0_low,  E_grid_np)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)
+
+    S         = torch.stack([S_low, S_high])      # (C=2, K)
+    I0_scalar = torch.sum(S * w_k, dim=1)
+
+    B_E = torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid)], dim=1)  # (K,2)
+    B_E.requires_grad_(False)
+
+    # ------------------------------------------
+    # energy_logits = torch.nn.Parameter(
+    #     torch.tensor([0.5, -0.5], device='cuda', dtype=torch.float32))
+    energy_logits = torch.nn.Parameter(
+        torch.tensor([0.0], device='cuda', dtype=torch.float32))
+
+    def get_energy_weights():
+        w = torch.softmax(energy_logits, dim=0) * n_spectra
+        return w
+
+    energy_opt = torch.optim.Adam([energy_logits], lr=1e-4)
+
+    # ------------------------------------------
     # Set up Gaussians
     gaussians = GaussianModel(
         n_spectra,
@@ -89,13 +160,11 @@ def training(
     )
     scene.init_gaussians(gaussians)
     gaussians.training_setup(opt)
-
-    # gain_pe  = torch.nn.Parameter(torch.tensor(0.5, device='cuda'))
-    # gain_cmp = torch.nn.Parameter(torch.tensor(0.5, device='cuda'))
-    # opt_gains = torch.optim.Adam([gain_pe, gain_cmp], lr=1e-2)
+    # gaussians.switch_stage("density")
 
     # Set up 3D TV loss
-    use_tv = opt.lambda_tv > 0
+    # use_tv = opt.lambda_tv > 0
+    use_tv = False
     if use_tv:
         print("Use total variation loss")
         tv_vol_size = opt.tv_vol_size
@@ -134,8 +203,6 @@ def training(
     for iteration in range(first_iter, opt.iterations + 1):   
         iter_start.record()
 
-        # gaussians.update_learning_rate(iteration)
-
         # Debug
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -150,32 +217,29 @@ def training(
         # total_loss = 0
         # total_l1_loss = 0
 
+        render_pkg = render_mu(viewpoint_cam, gaussians, pipe)
+        bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
+            render_pkg["bcoeffs"], 
+            render_pkg["viewspace_points"], 
+            render_pkg["visibility_filter"], 
+            render_pkg["radii"], 
+        )
+
         # Compute loss per spectral channel
         for spectral_id in spectral_ids:
             # Update active spectrum
             # gaussians.activate_spectra(spectral_id)
 
-            # ---------- Spectral Constants ----------
-            
             # ---------- Spectral Beer-Lambert ----------
-            render_pkg = render_mu(viewpoint_cam, gaussians, pipe, spectral_id)
-            image, bcoeff_image, viewspace_point_tensor, visibility_filter, radii = (
-                render_pkg["render"], 
-                render_pkg["bcoeffs"], 
-                render_pkg["viewspace_points"], 
-                render_pkg["visibility_filter"], 
-                render_pkg["radii"], 
-            )
+            μ_E = (bcoeff_image[0][None,:,:] * B_E[:,0,None,None] +
+                bcoeff_image[1][None,:,:] * B_E[:,1,None,None])        # (K,H,W)
 
-            # print(bcoeff_image.shape)
-
-            # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
-
-            # axes[0].imshow(bcoeff_image[0].detach().cpu().numpy(), cmap='gray')
-            # axes[1].imshow(bcoeff_image[1].detach().cpu().numpy(), cmap='gray')
-
-            # plt.show()
-            # return
+            I_pred = torch.sum(S[spectral_id,:,None,None] *
+                            torch.exp(-μ_E) * w_k[:,None,None],
+                            dim=0)
+            I_pred = torch.clamp(I_pred, min=1e-6 * I0_scalar[spectral_id])
+            # image = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
+            image = I_pred.unsqueeze(0)
 
             # ---------- Loss ----------
             # L1 Loss
@@ -195,24 +259,8 @@ def training(
 
             # plt.show()
 
-            # weight = 1.0 / (gt_image.clamp_min_(1.0))
-            # loss_data = weighted_l1_loss(image, gt_image, weight)          # L1
-            # loss_data = weighted_l2_loss(image, gt_image, weight)        # L2
-            # loss = (1.0 - opt.lambda_dssim) * loss_data
-
-            # loss_data = torch.nn.functional.poisson_nll_loss(
-            #             lambda_hat_log,                              # log λ̂
-            #             gt_image,                                    # observed counts
-            #             log_input=True,  full=False,  reduction='mean')
-
-            # loss = (1.0 - opt.lambda_dssim) * loss_data
-
             loss_l1 = l1_loss(image, gt_image)
             loss = (1.0 - opt.lambda_dssim) * loss_l1
-
-            # loss = torch.nn.functional.mse_loss(I_hat, gt_image)
-
-            # total_l1_loss = total_l1_loss + Ll1.item()
 
             # DSSIM Loss
             loss_dssim = (1.0 - ssim(image, gt_image))
@@ -255,6 +303,11 @@ def training(
                 loss_tv = tv_3d_loss(vol_pred, reduction="mean")
                 loss += opt.lambda_tv * loss_tv
 
+            loss_tv_basis = joint_tv(bcoeff_image, reduction='mean')
+            # loss_tv_basis = tnv_tv(bcoeff_image, reduction='mean')
+            # loss_tv_basis = linf_tv(bcoeff_image, reduction='mean')
+            loss += opt.lambda_tv_basis * loss_tv_basis
+
             # Loss backward
             # for k in losses_extra.keys():
             #     key = k[:k.rfind('_')]
@@ -264,12 +317,27 @@ def training(
             losses_per_energy.append(loss)
         
         # total_loss.backward()
-        data_loss = (energy_loss_weights[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
+        # data_loss = (energy_loss_weights[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
+        energy_loss_weights = get_energy_weights()          # ➋ fresh each iter
+        data_loss = (energy_loss_weights[:len(losses_per_energy)]
+                    * torch.stack(losses_per_energy)).sum()
 
         total_loss = data_loss
         total_loss.backward()
 
         iter_end.record()
+
+        # if (iteration - 1) % 200 == 0:                       # adjust every 200 iters (tune)
+        #     with torch.no_grad():
+        #         coeffs = gaussians.get_bcoeffs         # (N,2)
+        #         # ratio of *total* PE to C mass attenuation
+        #         r_obs = (coeffs[:,0].mean() / coeffs[:,1].mean()).clamp(min=1e-6)
+        #         mat_name, r_lookup = closest_material(r_obs)
+        #         # simple momentum update so it changes smoothly
+        #         gaussians.r_scale.mul_(0.9).add_(0.1 * r_lookup)
+        #         if (iteration-1) % 1000 == 0:
+        #             print(f"[iter {iteration}] matched material → {mat_name:8s}, "
+        #                 f"r = {gaussians.r_scale.item():.3f}")
 
         if (iteration - 1) % 500 == 0:
             # bcoeffs = gaussians._rhos
@@ -287,6 +355,7 @@ def training(
             print("Activated fractions: ", fracs_act[:,0].mean().item(), fracs_act[:,1].mean().item())
             # print("Grad: ", fracs[0].grad.mean().item(), fracs[1].grad.mean().item())
             print("NUM GAUSSIANS: ", gaussians.get_bcoeffs.shape[0])
+            print("learned w:", get_energy_weights().data.cpu().numpy())
             print("-------------------------------------")
         
         with torch.no_grad():
@@ -334,7 +403,10 @@ def training(
                     iteration > opt.densify_from_iter
                     and iteration % opt.densification_interval == 0
                 ):
+                    
+                    # _print_grad_stats("ρ / opacity", gaussians._rhos.grad)       # density / opacity
                     gaussians.densify_and_prune(
+                        # grad_thr_eff,
                         opt.densify_grad_threshold,
                         opt.density_min_threshold,
                         scene.cameras_extent,
@@ -360,10 +432,9 @@ def training(
                 # cls_optimizer.step()
                 # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
+                energy_opt.step()          # ➌ update weights
+                energy_opt.zero_grad(set_to_none=True)
 
-                # opt_gains.step()
-                # opt_gains.zero_grad(set_to_none=True)
-            
             if n_spectra > 0:
                 if iteration > 1000 and not combine_spectra:
                     spectral_ids.insert(0, 0)
@@ -373,14 +444,14 @@ def training(
                     spectral_ids = [0]
                     spectral_id = 0
 
+            # if iteration == opt.switch_iter:
+            #     gaussians.switch_stage("fractions")
+
             # if (iteration in checkpoint_iterations):
             #     print("\n[ITER {}] Saving Checkpoint".format(iteration))
             #     torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
             
             torch.cuda.empty_cache()
-        
-    # print(gain_pe)
-    # print(gain_cmp)
 
 def prepare_output_and_logger(args):    
 

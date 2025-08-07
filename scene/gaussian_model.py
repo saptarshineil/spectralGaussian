@@ -98,6 +98,8 @@ class GaussianModel:
         self._rhos = torch.empty(0)
         self._fracs = []
         self.setup_basis_functions(E)
+        # self.r_scale = torch.tensor(1.0, device='cuda')
+        # self.training_stage = "density"
         
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -122,9 +124,7 @@ class GaussianModel:
         self.setup_functions()
 
     def setup_basis_functions(self, E):
-        bfuncs_PE = bfunc_PE(E)
-        bfuncs_C  = bfunc_Compton(E)
-        self._bfuncs = torch.stack([bfuncs_PE, bfuncs_C], dim=1)
+        self._bfuncs = torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=1)
         self._bfuncs.requires_grad_(False)
 
     def set_requires_grad(self, tensor, requires_grad):
@@ -231,23 +231,63 @@ class GaussianModel:
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
         return torch.softmax(raw, dim=1)
-    
+
+    # @property
+    # def get_fracs(self):
+    #     raw = torch.cat(self._fracs, dim=1)          # (N,2) logits
+    #     tau = max(1.0,  5.0 * (1 - self.iter / 2000))     # linear anneal from 5→1 over first 2 k iters
+    #     return torch.softmax(raw / tau, dim=1)
+
     def get_bfuncs(self, i):
         return self._bfuncs[i].to(dtype=self.get_bcoeffs.dtype, device=self.get_bcoeffs.device)
-    
+    # def get_bfuncs(self, i: int):
+    #     # apply current scalar rescale on the fly
+    #     b = self._bfuncs[i]
+    #     return torch.stack([b[0] / self.r_scale, b[1]], dim=0)
+
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
     
     # ------------------ Spectral Gaussian functions ------------------
     def average_params_full_spectra(self):
         self.set_grad_params(self.active_spectra, False)
+
+    # def _set_requires_grad_and_refresh(self, tensor_ref, state: bool, pg_name: str):
+    #     tensor_ref.requires_grad_(state)
+    #     for g in self.optimizer.param_groups:
+    #         if g["name"] == pg_name:
+    #             # Replace the parameter object so Adam stops updating its momentum when frozen
+    #             g["params"][0] = tensor_ref
+    #             break
+
+    # def set_grad_params(self, basis_id: int, state: bool):
+    #     self._set_requires_grad_and_refresh(self._rhos, state and basis_id < 0, "rhos")
+    #     self._set_requires_grad_and_refresh(self._fracs[basis_id], state, f"fracs_{basis_id}")
+
+    # def switch_stage(self, stage: str):
+    #     assert stage in ("density", "fractions")
+    #     self.training_stage = stage
+    #     # --- freeze / un‑freeze ---
+    #     if stage == "density":
+    #         self._set_requires_grad_and_refresh(self._rhos,  True, "rhos")
+    #         for k in self.bcoeff_ids:
+    #             self._set_requires_grad_and_refresh(self._fracs[k], False, f"fracs_{k}")
+    #     else:  # fractions
+    #         self._set_requires_grad_and_refresh(self._rhos,  False, "rhos")
+    #         for k in self.bcoeff_ids:
+    #             self._set_requires_grad_and_refresh(self._fracs[k], True,  f"fracs_{k}")
+    #     # --- drop lr to zero for the frozen groups ---
+    #     for pg in self.optimizer.param_groups:
+    #         if (stage == "density" and pg["name"].startswith("fracs_")) or \
+    #         (stage == "fractions" and pg["name"] == "rhos"):
+    #             pg["lr"] = 0.0
    
     def set_grad_params(self, basis_id: int, state: bool):
     #     self.set_requires_grad(self._bcoeffs[bcoeff_id], state)
         # self._rhos[basis_id].requires_grad_(state)
         self._rhos.requires_grad_(state)
         self._fracs[basis_id].requires_grad_(state)
-
+    
     def activate_spectra(self, active_spectral_id):
         # self.active_spectra =  active_spectral_id
         # # self.set_grad_params(self.active_spectra, True)
@@ -474,13 +514,13 @@ class GaussianModel:
             lr_final=training_args.rotation_lr_final * self.spatial_lr_scale,
             max_steps=training_args.rotation_lr_max_steps,
         )
-        self.pe_scheduler_args = get_expon_lr_func(
+        self.fracs_0_scheduler_args = get_expon_lr_func(
             lr_init=training_args.pe_lr_init * self.spatial_lr_scale,
             lr_final=training_args.pe_lr_final * self.spatial_lr_scale,
             max_steps=training_args.pe_lr_max_steps,
         )
 
-        self.compton_scheduler_args = get_expon_lr_func(
+        self.fracs_1_scheduler_args = get_expon_lr_func(
             lr_init=training_args.compton_lr_init * self.spatial_lr_scale,
             lr_final=training_args.compton_lr_final * self.spatial_lr_scale,
             max_steps=training_args.compton_lr_max_steps,
@@ -500,6 +540,8 @@ class GaussianModel:
                     return lr
                 except AttributeError:
                     pass
+            if param_group["lr"] == 0.0:           # frozen
+                return 0.0
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
@@ -580,6 +622,39 @@ class GaussianModel:
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
+
+    # def replace_tensor_to_optimizer(self, tensor, name):
+    #     for group in self.optimizer.param_groups:
+    #         if group["name"] != name:
+    #             continue
+
+    #         old_param = group["params"][0]
+    #         state = self.optimizer.state.pop(old_param, None)
+
+    #         # -------- make sure state exists and has the right dtypes --------
+    #         if state is None:
+    #             state = {
+    #                 "step": torch.zeros((), dtype=torch.int64, device=tensor.device),
+    #                 "exp_avg":    torch.zeros_like(tensor),
+    #                 "exp_avg_sq": torch.zeros_like(tensor),
+    #             }
+    #         else:
+    #             # resize buffers
+    #             state["exp_avg"].resize_as_(tensor).zero_()
+    #             state["exp_avg_sq"].resize_as_(tensor).zero_()
+    #             # guarantee tensor dtype for `step`
+    #             if not torch.is_tensor(state.get("step")):
+    #                 state["step"] = torch.tensor(state["step"],
+    #                                             dtype=torch.int64,
+    #                                             device=tensor.device)
+    #         # -----------------------------------------------------------------
+
+    #         # swap param
+    #         new_param = nn.Parameter(tensor.requires_grad_(old_param.requires_grad))
+    #         group["params"][0] = new_param
+    #         self.optimizer.state[new_param] = state
+    #         setattr(self, f"_{name}", new_param)
+    #     return {name: new_param}
 
     # ------------------ Densification / Pruning ------------------
     def densify_and_prune(self, 
