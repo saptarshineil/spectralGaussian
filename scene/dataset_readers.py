@@ -24,7 +24,7 @@ from glob import glob
 import torch
 
 import matplotlib.pyplot as plt
-from utils.spectralCT_utils import analytic_fraction
+from utils.spectralCT_utils import analytic_fraction_2, analytic_fraction_3 
 
 
 mode_id = {
@@ -611,7 +611,10 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
-        fractions = analytic_fraction(rhos[:,0])
+        if n_bcoeffs == 2:
+            fractions = analytic_fraction_2(rhos[:,0])
+        else:
+            fractions = analytic_fraction_3(rhos[:,0])
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
         # global_frac = np.array([0.0329, 0.9671], dtype=np.float32)

@@ -8,8 +8,14 @@ C = 510.999
 EPSILON = 1e-8
 
 
-# ------------------------ Fraction initialization ------------------------ 
-def analytic_fraction(
+# ------------------------ Fraction initialization ------------------------
+def analytic_fraction_2(rho, rho0=1.55, alpha=3.1, eps=1e-3):
+    f_pe = 1.0 / (1.0 + (rho0 / rho)**alpha)
+    f_pe = np.clip(f_pe, eps, 1.0-eps)
+    return np.stack([f_pe, 1.0 - f_pe], axis=-1).astype(np.float32)
+
+
+def analytic_fraction_3(
         rho,
         rho0_pe   = 1.55,     # centre of transition  [g cm⁻³]
         alpha_pe  = 3.1,      # slope
@@ -131,9 +137,14 @@ def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np):
     return torch.tensor(S*I0, device='cuda', dtype=torch.float32)
 
 def get_B_E(E_grid, bfunc_Kedge):
+    if bfunc_Kedge is None:
+        return torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid)], dim=1)
+    else:
         return torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid), bfunc_Kedge()], dim=1)
-        # return torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid)], dim=1)
 
 def get_B_E_at_energy(E_grid, bfunc_Kedge, E):
-    Kedge = interp1d(E_grid, bfunc_Kedge(), E)
-    return torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)
+    if bfunc_Kedge is None:
+        return torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=-1)
+    else:    
+        Kedge = interp1d(E_grid, bfunc_Kedge(), E)
+        return torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)

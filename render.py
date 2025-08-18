@@ -91,7 +91,7 @@ def render_lightings(model_path, name, iteration, gaussians, sample_num, n_spect
             save_image_raw(os.path.join(lighting_path, '{0:05d}'.format(sampled_index) + ".hdr"), lighting.permute(1,2,0).detach().cpu().numpy())
 
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, classifier, n_spectra, scene):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, classifier, n_spectra, n_bcoeffs, scene):
     # TEMP: removed segmentation
     # colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "objects_feature16")
     # gt_colormask_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt_objects_color")
@@ -121,25 +121,28 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
     #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
-    ckpt = torch.load(os.path.join(model_path,
-                                f"kedge_{iteration:06d}.pt"),
-                    map_location="cuda")
-    E_grid  = ckpt["E_grid"].cuda()
-    # bfunc_K = BFuncKedge(E_grid.shape[0]).cuda()
-    bfunc_K = BFuncKedge(E_grid).cuda()
-    bfunc_K.load_state_dict(ckpt["state_dict"])
-    bfunc_K.eval()
+    E_keV  = torch.tensor([50.0, 120.0], device="cuda")
 
-    E_keV  = torch.tensor([50.0, 120.0], device="cuda")          # (2,)
-    # B_E    = torch.stack([                                        # (2 energies , 2 basis)
-    #             bfunc_PE(E_keV),          # photo-electric basis
-    #             bfunc_Compton(E_keV)      # Compton basis
-    #         ], dim=1) 
+    if n_bcoeffs == 3:
+        ckpt = torch.load(os.path.join(model_path,
+                                    f"kedge_{iteration:06d}.pt"),
+                        map_location="cuda")
+        E_grid  = ckpt["E_grid"].cuda()
+        bfunc_K = BFuncKedge(E_grid).cuda()
+        bfunc_K.load_state_dict(ckpt["state_dict"])
+        bfunc_K.eval()
 
-    Kedge = interp1d(E_keV, E_grid, bfunc_K())
-    B_E = torch.stack([ bfunc_PE(E_keV),                   # (2,-)
-                    bfunc_Compton(E_keV),
-                    Kedge ], dim=1)
+        Kedge = interp1d(E_keV, E_grid, bfunc_K())
+        B_E = torch.stack([
+            bfunc_PE(E_keV),
+            bfunc_Compton(E_keV),
+            Kedge 
+        ], dim=1)
+    else:
+        B_E = torch.stack([
+            bfunc_PE(E_keV),
+            bfunc_Compton(E_keV)
+        ], dim=1)
 
     for spectral_id in list(range(0, n_spectra)):
         gaussians.active_spectra = spectral_id
@@ -149,43 +152,16 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
-        # I0 = torch.tensor([13053.1, 13053.1], dtype=torch.float32).cuda()
-        # c = torch.tensor([290 / 50, 200 / 50], dtype=torch.float32).cuda()
-
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
-            # results = render_r2(view, gaussians, pipeline)
-            # torch.cuda.synchronize()
-            # rendering = results["render"]
-
             results = render_mu(view, gaussians, pipeline)
             torch.cuda.synchronize()
-            # rendering = results["render"]
             bcoeff_img = results["bcoeffs"]
 
-            # rendering = ( bcoeff_img[0] * B_E[spectral_id,0] + bcoeff_img[1] * B_E[spectral_id,1] ).unsqueeze(0)
-            rendering = (bcoeff_img[0] * B_E[spectral_id,0] +     # PE
-                bcoeff_img[1] * B_E[spectral_id,1] +     # Compton
-                bcoeff_img[2] * B_E[spectral_id,2])
-
-            # rendering = torch.log(I0[spectral_id] * torch.exp(-rendering)) / c[spectral_id]
-
-            # gt = view.original_image[0:3, :, :] if spectral_id == 0 else view.spectral_images[spectral_id - 1][0:3,:,:]
+            rendering = (bcoeff_img * B_E[spectral_id, :, None, None]).sum(dim=0, keepdim=True)
+            
             gt = view.spectral_images[spectral_id][0:1,:,:]
             
-            # print(rendering.shape, rendering.min(), rendering.max())
-            # print(gt.shape, gt.min(), gt.max())
-
-            # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
-
-            # img = rendering[0].cpu().detach().numpy()
-            # gt = gt[0].cpu().detach().numpy()
-            # axes[0].imshow(img, cmap='gray', vmin=img.min(), vmax=img.max())
-            # axes[1].imshow(gt, cmap='gray', vmin=gt.min(), vmax=gt.max())
-
-            # plt.show()
-            # return
-
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
             torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
@@ -219,10 +195,10 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         # classifier.load_state_dict(torch.load(os.path.join(dataset.model_path,"point_cloud","iteration_"+str(scene.loaded_iter)+"_" + str(n_spectra),"classifier.pth")))
 
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, classifier, n_spectra, scene)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, classifier, n_spectra, n_bcoeffs, scene)
 
         if (not skip_test) and (len(scene.getTestCameras()) > 0):
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, classifier, n_spectra, scene)
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, classifier, n_spectra, n_bcoeffs, scene)
 
 if __name__ == "__main__":
     # Set up command line argument parser

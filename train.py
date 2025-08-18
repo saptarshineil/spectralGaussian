@@ -128,8 +128,11 @@ def training(
     energy_opt = torch.optim.Adam([energy_logits], lr=1e-3)
 
     # ------------------------------------------
-    bfunc_Kedge = BFuncKedge(E_grid).cuda()
-    basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=1e-4)
+    bfunc_Kedge = None
+    basis_opt = None
+    if n_bcoeffs == 3:
+        bfunc_Kedge = BFuncKedge(E_grid).cuda()
+        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=1e-4)
 
     # ------------------------------------------
     # Set up Gaussians
@@ -299,8 +302,6 @@ def training(
                 loss_tv = tv_3d_loss(vol_pred, reduction="mean")
                 loss += opt.lambda_tv * loss_tv
 
-            
-
             # Loss backward
             # for k in losses_extra.keys():
             #     key = k[:k.rfind('_')]
@@ -330,7 +331,10 @@ def training(
             # fracs = gaussians._fracs
             # print("Raw: ", fracs[0].mean().item(), fracs[1].mean().item())
             fracs_act = gaussians.get_fracs
-            print("Activated fractions: ", fracs_act[:,0].mean().item(), fracs_act[:,1].mean().item(), fracs_act[:,2].mean().item())
+            if n_bcoeffs == 3:
+                print("Activated fractions: ", fracs_act[:,0].mean().item(), fracs_act[:,1].mean().item(), fracs_act[:,2].mean().item())
+            else:
+                print("Activated fractions: ", fracs_act[:,0].mean().item(), fracs_act[:,1].mean().item())
             # print("Grad: ", fracs[0].grad.mean().item(), fracs[1].grad.mean().item())
             print("NUM GAUSSIANS: ", gaussians.get_bcoeffs.shape[0])
             print("learned w:", get_energy_weights().data.cpu().numpy())
@@ -409,8 +413,9 @@ def training(
                 gaussians.update_learning_rate(iteration)
                 energy_opt.step()
                 energy_opt.zero_grad(set_to_none=True)
-                basis_opt.step()
-                basis_opt.zero_grad(set_to_none=True)
+                if basis_opt:
+                    basis_opt.step()
+                    basis_opt.zero_grad(set_to_none=True)
 
             if n_spectra > 0:
                 if iteration > 1000 and not combine_spectra:
@@ -427,13 +432,14 @@ def training(
             
             torch.cuda.empty_cache()
 
-    torch.save(
-        {
-            "state_dict": bfunc_Kedge.state_dict(),
-            "E_grid"    : E_grid.cpu(),              # needed to reconstruct
-        },
-        os.path.join(scene.model_path, f"kedge_{iteration:06d}.pt")
-    )
+    if n_bcoeffs == 3:
+        torch.save(
+            {
+                "state_dict": bfunc_Kedge.state_dict(),
+                "E_grid"    : E_grid.cpu(),
+            },
+            os.path.join(scene.model_path, f"kedge_{iteration:06d}.pt")
+        )
 
 def prepare_output_and_logger(args):    
 

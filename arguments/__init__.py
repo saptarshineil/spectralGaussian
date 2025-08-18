@@ -194,7 +194,7 @@ class OptimizationParams(ParamGroup):
         self.basis2_lr_max_steps = 30000
 
         self.lambda_tv_basis  = 1e-3
-        self.lambda_dirichlet = 1e-4    # strength of the KL/Dirichlet term
+        self.lambda_dirichlet = 1e-4
         self.lambda_ortho     = 1e-3
 
         super().__init__(parser, "Optimization Parameters")
