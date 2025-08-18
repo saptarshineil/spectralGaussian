@@ -208,8 +208,6 @@ def render_mu(
 
     # -- R2-Gaussian --
     bcoeffs = pc.get_bcoeffs
-    bfuncs = pc.get_bfuncs(spectral_id)
-    # bfuncs = torch.tensor([1.0, 1.0], device='cuda')
 
     raster_settings_ct = GaussianRasterizationSettings_ct(
         num_channels = bcoeffs.shape[1], 
@@ -245,12 +243,10 @@ def render_mu(
     # -- R2-Gaussian --
     # rendered_objects = None
 
-    # rendered_image, rendered_bcoeffs, radii = rasterizer_ct(
     rendered_bcoeffs, radii = rasterizer_ct(
         means3D=means3D,
         means2D=means2D,
         bcoeffs=bcoeffs,
-        # bfuncs=bfuncs,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
@@ -275,7 +271,6 @@ def render_mu(
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     out = {
-        # "render": rendered_image,
         "bcoeffs": rendered_bcoeffs,
         "viewspace_points": screenspace_points,
         "visibility_filter" : radii > 0,

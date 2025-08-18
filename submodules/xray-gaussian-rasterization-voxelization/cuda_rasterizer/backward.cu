@@ -681,7 +681,7 @@ void BACKWARD::render(
 	float* dL_dmu
 	)
 {
-	renderCUDA<2> << <grid, block >> >(
+	renderCUDA<3> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H, CHANNELS,

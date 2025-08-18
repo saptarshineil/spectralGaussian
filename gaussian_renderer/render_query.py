@@ -30,6 +30,7 @@ def query(
     nVoxel,
     sVoxel,
     pipe: PipelineParams,
+    bfuncs,
     spectral_id=0,
     scaling_modifier=1.0,
 ):
@@ -54,7 +55,9 @@ def query(
 
     means3D = pc.get_xyz
     # opacity = pc.get_density_at_energy(E_keV)
-    opacity = pc.get_density_at_energy(spectral_id)
+    # opacity = pc.get_density_at_energy(bfuncs)
+    bcoeffs = pc.get_bcoeffs
+    opacity = (bcoeffs * bfuncs).sum(dim=1, keepdim=True)
 
     scales = None
     rotations = None

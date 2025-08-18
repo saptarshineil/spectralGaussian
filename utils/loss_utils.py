@@ -14,6 +14,21 @@ from scipy.spatial import cKDTree
 from utils.image_utils import erode
 import numpy as np
 
+# def dirichlet_kl(fracs, target_conc=1/3, eps=1e-9):
+#     """
+#     KL( fracs || uniform(target_conc) ).
+#     fracs : (N, 3) softmax-probabilities
+#     """
+#     target = torch.full_like(fracs, target_conc)
+#     return (fracs * (fracs.add(eps).log() - target.log())).sum(-1).mean()
+
+# def basis_orthogonality(B):                    # B: (K, 3) already normalised
+#     # cosine of the angle between vectors
+#     PE, Comp, K = B.t()                        # (K,) each
+#     dot_PE_K   = (PE   * K).sum() / (PE.norm() * K.norm() + 1e-12)
+#     dot_Cmp_K  = (Comp * K).sum() / (Comp.norm()* K.norm() + 1e-12)
+#     return dot_PE_K.pow(2) + dot_Cmp_K.pow(2)  # positive, 0 when orthogonal
+
 # def joint_tv(bcoeff_image, reduction='mean', eps=1e-6):
 #     """
 #     Total Variation on the basis‑maps, encourage PE & Compton to share edges.

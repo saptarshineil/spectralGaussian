@@ -150,3 +150,13 @@ def flip_align_view(normal, viewdir):
     non_flip = dotprod>=0 # (N, 1)
     normal_flipped = normal*torch.where(non_flip, 1, -1) # (N, 3)
     return normal_flipped, non_flip
+
+def interp1d(x, y, x_new):
+    idx = torch.bucketize(x_new, x) - 1
+    idx = idx.clamp(0, x.numel() - 2)
+
+    x0, x1 = x[idx], x[idx + 1]
+    y0, y1 = y[idx], y[idx + 1]
+    t      = (x_new - x0) / (x1 - x0)
+
+    return y0 + t * (y1 - y0)

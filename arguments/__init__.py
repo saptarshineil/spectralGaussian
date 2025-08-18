@@ -95,7 +95,7 @@ class OptimizationParams(ParamGroup):
         # self.iterations = 30_000
         self.iterations = 5_000
         # self.iterations = 1000
-        # self.iterations = 1
+        # self.iterations = 10
         
         # -- Spectral --> Gaussian basics --
         # self.position_lr_init = 0.00016
@@ -130,7 +130,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.80              # Test
         
         # -- Spectral --> densification --
-        self.densification_interval = 500      # spectral + R2 
+        self.densification_interval = 100      # spectral + R2 
         self.densify_from_iter = 500           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
         # self.densify_grad_threshold = 0.00050   # R2
@@ -172,15 +172,30 @@ class OptimizationParams(ParamGroup):
         self.max_screen_size = None
 
         # -- Test --
-        self.pe_lr_init = 0.005  # PE initial learning rate (higher)
-        self.pe_lr_final = 0.0005
-        self.pe_lr_max_steps = 30000
+        # self.pe_lr_init = 0.005  # PE initial learning rate (higher)
+        # self.pe_lr_final = 0.0005
+        # self.pe_lr_max_steps = 30000
 
-        self.compton_lr_init = 0.001  # Compton initial learning rate (lower)
-        self.compton_lr_final = 0.0001
-        self.compton_lr_max_steps = 30000
+        # self.compton_lr_init = 0.001  # Compton initial learning rate (lower)
+        # self.compton_lr_final = 0.0001
+        # self.compton_lr_max_steps = 30000
+
+        # PE
+        self.basis0_lr_init = 0.0005
+        self.basis0_lr_final = 0.00005
+        self.basis0_lr_max_steps = 30000
+        # Compton
+        self.basis1_lr_init = 0.0001
+        self.basis1_lr_final = 0.00001
+        self.basis1_lr_max_steps = 30000
+        # K-edge
+        self.basis2_lr_init = 0.0001
+        self.basis2_lr_final = 0.00001
+        self.basis2_lr_max_steps = 30000
 
         self.lambda_tv_basis  = 1e-3
+        self.lambda_dirichlet = 1e-4    # strength of the KL/Dirichlet term
+        self.lambda_ortho     = 1e-3
 
         super().__init__(parser, "Optimization Parameters")
 

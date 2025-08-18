@@ -411,7 +411,7 @@ void FORWARD::render(
 	// float* out_color,
 	float* out_bcoeffs)
 {
-	renderCUDA<2> << <grid, block >> > (
+	renderCUDA<3> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H, CHANNELS,

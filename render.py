@@ -25,7 +25,9 @@ from sklearn.decomposition import PCA
 from scene.NVDIFFREC.util import save_image_raw
 
 import matplotlib.pyplot as plt
-from utils.spectralCT_utils import bfunc_Compton, bfunc_PE
+from utils.spectralCT_utils import bfunc_Compton, bfunc_PE, BFuncKedge
+from utils.general_utils import interp1d
+
 
 def feature_to_rgb(features):
     # Input features shape: (16, H, W)
@@ -119,11 +121,25 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
     #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
+    ckpt = torch.load(os.path.join(model_path,
+                                f"kedge_{iteration:06d}.pt"),
+                    map_location="cuda")
+    E_grid  = ckpt["E_grid"].cuda()
+    # bfunc_K = BFuncKedge(E_grid.shape[0]).cuda()
+    bfunc_K = BFuncKedge(E_grid).cuda()
+    bfunc_K.load_state_dict(ckpt["state_dict"])
+    bfunc_K.eval()
+
     E_keV  = torch.tensor([50.0, 120.0], device="cuda")          # (2,)
-    B_E    = torch.stack([                                        # (2 energies , 2 basis)
-                bfunc_PE(E_keV),          # photo-electric basis
-                bfunc_Compton(E_keV)      # Compton basis
-            ], dim=1) 
+    # B_E    = torch.stack([                                        # (2 energies , 2 basis)
+    #             bfunc_PE(E_keV),          # photo-electric basis
+    #             bfunc_Compton(E_keV)      # Compton basis
+    #         ], dim=1) 
+
+    Kedge = interp1d(E_keV, E_grid, bfunc_K())
+    B_E = torch.stack([ bfunc_PE(E_keV),                   # (2,-)
+                    bfunc_Compton(E_keV),
+                    Kedge ], dim=1)
 
     for spectral_id in list(range(0, n_spectra)):
         gaussians.active_spectra = spectral_id
@@ -147,9 +163,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
             # rendering = results["render"]
             bcoeff_img = results["bcoeffs"]
 
-            rendering = ( bcoeff_img[0] * B_E[spectral_id,0] +
-                     bcoeff_img[1] * B_E[spectral_id,1] ).unsqueeze(0)
-
+            # rendering = ( bcoeff_img[0] * B_E[spectral_id,0] + bcoeff_img[1] * B_E[spectral_id,1] ).unsqueeze(0)
+            rendering = (bcoeff_img[0] * B_E[spectral_id,0] +     # PE
+                bcoeff_img[1] * B_E[spectral_id,1] +     # Compton
+                bcoeff_img[2] * B_E[spectral_id,2])
 
             # rendering = torch.log(I0[spectral_id] * torch.exp(-rendering)) / c[spectral_id]
 
@@ -185,10 +202,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
             scale_bound = np.array([dataset.scale_min,
                                     dataset.scale_max]) * volume_to_world
             
-        # E = torch.tensor([50., 70.], dtype=torch.float32, device='cuda')
-        E = torch.tensor([50., 120.], dtype=torch.float32, device='cuda')
-        
-        gaussians = GaussianModel(n_spectra, n_bcoeffs, E, scale_bound)
+        gaussians = GaussianModel(n_spectra, n_bcoeffs, scale_bound)
 
         scene.init_gaussians(gaussians)
 
