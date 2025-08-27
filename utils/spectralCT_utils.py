@@ -9,6 +9,31 @@ EPSILON = 1e-8
 
 
 # ------------------------ Fraction initialization ------------------------
+def pe_compton_from_density(rho, q_lo=0.20, q_hi=0.80, eps=1e-3):
+    """
+    Monotone logistic prior: high rho -> high PE fraction.
+    q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
+    """
+    rho = np.asarray(rho, np.float32).reshape(-1)
+    # pick where the transition lives, from dataset statistics
+    rho_l = np.quantile(rho, q_lo)
+    rho_h = np.quantile(rho, q_hi)
+    rho_l = max(rho_l, eps)
+    rho_h = max(rho_h, rho_l + 1e-6)
+
+    # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
+    log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
+    alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
+
+    t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
+    f_pe = 1.0 / (1.0 + np.exp(-t))
+    f_pe = np.clip(f_pe, eps, 1.0 - eps)
+
+    f = np.stack([f_pe, 1.0 - f_pe], axis=-1).astype(np.float32)
+    rho0 = float(np.exp(log_rho0))
+    return f, rho0, float(alpha)
+
+
 def analytic_fraction_2(rho, rho0=1.55, alpha=3.1, eps=1e-3):
     f_pe = 1.0 / (1.0 + (rho0 / rho)**alpha)
     f_pe = np.clip(f_pe, eps, 1.0-eps)
@@ -52,41 +77,34 @@ def analytic_fraction_3(
 
 # ------------------------ Photoelectric + Compton basis functions ------------------------
 def bfunc_PE(E_keV: torch.Tensor) -> torch.Tensor:
-    """
-    Photo‑electric basis  ~  E^{-3}.
-    """
     E_keV = torch.as_tensor(E_keV, dtype=torch.float32, device=E_keV.device)
     return torch.pow(E_keV, -3.0)         
 
 
 def bfunc_Compton(E_keV: torch.Tensor,
                   eps: float = EPSILON) -> torch.Tensor:
-    """
-    Klein‑Nishina–based Compton basis with ε‑stabilised denominators.
-    """
     E_keV = torch.as_tensor(E_keV, dtype=torch.float32, device=E_keV.device)
     
-    # Dimensionless energy ratio  a = E / mec²
-    a = torch.clamp(E_keV / C, min=eps)              # avoids a→0 divergences
+    # Energy ratio
+    a = torch.clamp(E_keV / C, min=eps)
 
-    # Pre‑compute safe denominators
     denom_a      = a + eps
     denom_a2     = a.pow(2) + eps
     denom_2a     = 2.0 * a + eps
-    denom_1_2a   = 1.0 + denom_2a                    # already contains +eps
+    denom_1_2a   = 1.0 + denom_2a
     denom_1_2a2  = denom_1_2a.pow(2) + eps
 
     # Low‑frequency component
     term1 = (1.0 + a) / denom_a2
 
-    # High‑frequency corrections (original Klein–Nishina algebra, eps‑safe)
+    # High‑frequency
     term2 = 2.0 * (1.0 + a) / denom_1_2a \
-            - torch.log1p(denom_2a - eps) / denom_a   # subtract eps to keep log argument exact
+            - torch.log1p(denom_2a - eps) / denom_a
 
     term3 = torch.log1p(denom_2a - eps) / denom_2a
     term4 = (1.0 + 3.0 * a) / denom_1_2a2
 
-    return term1 * term2 + term3 - term4
+    return (term1 * term2 + term3 - term4)
 
 
 # ------------------------ Learned K-edge basis function ------------------------
@@ -148,3 +166,13 @@ def get_B_E_at_energy(E_grid, bfunc_Kedge, E):
     else:    
         Kedge = interp1d(E_grid, bfunc_Kedge(), E)
         return torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)
+
+# def get_B_E_at_energy(E_grid, bfunc_Kedge, E):
+#     if bfunc_Kedge is None:
+#         b = torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=-1)
+#     else:
+#         Kedge = interp1d(E_grid, bfunc_Kedge(), E)
+#         b = torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)
+#     # Normalize columns for better conditioning (ρ will absorb the scale):
+#     b = b / (b.norm(p=2) + 1e-12)
+#     return b

@@ -97,6 +97,7 @@ class GaussianModel:
         # self._rhos = []
         self._rhos = torch.empty(0)
         self._fracs = []
+        self._rho_frozen = False
         
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -123,6 +124,21 @@ class GaussianModel:
     def set_requires_grad(self, tensor, requires_grad):
             """Returns a new tensor with the specified requires_grad setting."""
             return tensor.detach().clone().requires_grad_(requires_grad)
+    
+    def freeze_rhos(self):
+        """Keep rhos trainable (for autograd) but lr=0, so optimizer won't update."""
+        self._rho_frozen = True
+        if self.optimizer is not None:
+            for g in self.optimizer.param_groups:
+                if g["name"] == "rhos":
+                    g["lr"] = 0.0
+
+    def unfreeze_rhos(self):
+        """Re-enable scheduling for rhos; lr will be set by update_learning_rate()."""
+        self._rho_frozen = False
+
+    def rhos_are_frozen(self) -> bool:
+        return self._rho_frozen
 
     def capture(self):
         return (
@@ -173,6 +189,12 @@ class GaussianModel:
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
         return torch.softmax(raw, dim=1)
+    # def get_fracs(self):
+    #     raw = torch.cat(self._fracs, dim=1)
+    #     probs = torch.softmax(raw, dim=1)
+    #     eps = 0.05                       # 5% floor; tune 0.02–0.10
+    #     C = probs.shape[1]
+    #     return (1.0 - eps) * probs + eps / C
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -316,13 +338,13 @@ class GaussianModel:
         rhos  = torch.tensor(pcd.rhos, dtype=torch.float32, device='cuda')
         fused_rhos = self.rhos_inverse_activation(rhos).float().cuda()
         self._rhos = nn.Parameter(fused_rhos.requires_grad_(True))
-        for bcoeff_id in self.bcoeff_ids:
-            # rhos  = torch.tensor(pcd.rhos[:, bcoeff_id], dtype=torch.float32, device='cuda').unsqueeze(1)
-            # fused_rhos = self.rhos_inverse_activation(rhos).float().cuda()
-            # self._rhos.append(nn.Parameter(fused_rhos.requires_grad_(True)))
-            fracs  = torch.tensor(pcd.fracs[:, bcoeff_id], dtype=torch.float32, device='cuda').unsqueeze(1)
-            fused_fracs = torch.log(fracs.clamp_min(1e-6))
-            self._fracs.append(nn.Parameter(fused_fracs.requires_grad_(True)))
+       
+        fracs = torch.tensor(pcd.fracs, dtype=torch.float32, device='cuda')  # shape (N, C)
+        fused_fracs = torch.log(fracs.clamp_min(1e-6))  # shape (N, C)
+        for k in self.bcoeff_ids:
+            self._fracs.append(nn.Parameter(fused_fracs[:, k:k+1].requires_grad_(True)))
+        f = self.get_fracs 
+        print("Softmax channel means:", f[:, 0].mean(), f[:, 1].mean())
             
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
@@ -438,21 +460,50 @@ class GaussianModel:
                     max_steps=getattr(training_args, f"basis{j}_lr_max_steps"),
                 ))
         
+    # def _update_learning_rate(self, iteration, param):
+    #     for param_group in self.optimizer.param_groups:
+    #         if param_group["name"] == param:
+    #             try:
+    #                 if param.endswith(str(self.active_spectra)):
+    #                     spectral_id = int(param[-1])
+    #                     param_new = param[:-2]
+    #                     lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
+    #                 else:    
+    #                     lr = getattr(self, f"{param}_scheduler_args")(iteration)
+    #                 param_group['lr'] = lr
+    #                 return lr
+    #             except AttributeError:
+    #                 pass
+    #         if param_group["lr"] == 0.0:           # frozen
+    #             return 0.0
+
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == param:
+                # NEW: honor ρ warm-up
+                if param == "rhos" and getattr(self, "_rho_frozen", False):
+                    param_group["lr"] = 0.0
+                    return 0.0
+                # if param == "rhos" and not getattr(self, "_rho_frozen", False):
+                #     lr = getattr(self, f"{param}_scheduler_args")(iteration)
+                #     # Slow ρ down until (FRAC_WARMUP_ITERS + K)
+                #     K = 1000
+                #     if iteration < (self.frac_warm_cutoff if hasattr(self, "frac_warm_cutoff") else 0):
+                #         pass
+                #     param_group["lr"] = lr * (0.25 if iteration < (1000 + K) else 1.0)
+                #     return param_group["lr"]
                 try:
                     if param.endswith(str(self.active_spectra)):
                         spectral_id = int(param[-1])
                         param_new = param[:-2]
                         lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
-                    else:    
+                    else:
                         lr = getattr(self, f"{param}_scheduler_args")(iteration)
-                    param_group['lr'] = lr
+                    param_group["lr"] = lr
                     return lr
                 except AttributeError:
                     pass
-            if param_group["lr"] == 0.0:           # frozen
+            if param_group["lr"] == 0.0:
                 return 0.0
 
     def update_learning_rate(self, iteration):
@@ -485,7 +536,7 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-2):
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
         with torch.no_grad():
             rho    = self.rhos_activation(self._rhos)
             rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
@@ -516,6 +567,62 @@ class GaussianModel:
                 self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
 
             self.decay_optimizer_moments(decay=0.5)
+
+    # def reset_bcoeffs(self,
+    #                   reset_rho: float = None,
+    #                   min_frac: float = 1e-3,
+    #                   use_prior: bool = True,
+    #                   prior_mix: float = 0.5,     # 0(no prior) .. 1(full prior)
+    #                   q_clip: float = 0.98):      # percentile clip for rho
+    #     """
+    #     Prior-guided reset that:
+    #       - clips rho by high percentile (not a fixed number),
+    #       - mixes current fraction logits with a rho->fraction prior.
+    #     """
+    #     from utils.spectralCT_utils import analytic_fraction_2, analytic_fraction_3, pe_compton_from_density
+    #     with torch.no_grad():
+    #         # --- ρ: clip by percentile, optional global cap --------------------------------
+    #         rho = self.rhos_activation(self._rhos)                       # (N,1)
+    #         p = torch.quantile(rho.detach().flatten(), q_clip).item()
+    #         cap = p if reset_rho is None else min(reset_rho, p)
+    #         rho_cl = rho.clamp(max=cap)
+    #         new_raw_rho = self.rhos_inverse_activation(rho_cl)
+    #         self._rhos = self.replace_tensor_to_optimizer(new_raw_rho, "rhos")["rhos"]
+
+    #         # --- fractions: mix with prior instead of pushing to uniform -------------------
+    #         raw_logits = torch.cat(self._fracs, dim=1)                   # (N,C)
+    #         probs = torch.softmax(raw_logits, dim=1)                      # (N,C)
+    #         probs = probs.clamp_min(min_frac)
+    #         probs = probs / probs.sum(dim=1, keepdim=True)
+
+    #         if use_prior and prior_mix > 0.0:
+    #             rho_np = rho_cl.detach().cpu().numpy().reshape(-1)
+    #             C = len(self.bcoeff_ids)
+    #             if C == 2:
+    #                 f_prior, _, _ = pe_compton_from_density(rho_np, q_lo=0.20, q_hi=0.80)
+    #                 # or: f_prior = analytic_fraction_2(rho_np)
+    #             else:
+    #                 f_prior = analytic_fraction_3(rho_np)
+    #             f_prior = torch.from_numpy(f_prior).to(device=probs.device, dtype=probs.dtype)
+    #             f_prior = f_prior.clamp_min(min_frac)
+    #             f_prior = f_prior / f_prior.sum(dim=1, keepdim=True)
+
+    #             # convex mix in *logit* space: current logits vs prior logits
+    #             logits_cur   = torch.log(probs)
+    #             logits_prior = torch.log(f_prior)
+    #             mixed_logits = (1.0 - prior_mix) * logits_cur + prior_mix * logits_prior
+    #             new_logits   = mixed_logits
+    #         else:
+    #             new_logits = torch.log(probs)
+
+    #         # write back per-channel tensors
+    #         for k in range(len(self._fracs)):
+    #             name   = f"fracs_{k}"
+    #             tensor = new_logits[:, k:k+1]
+    #             self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+    #         # reduce Adam momentum so the reset takes effect
+    #         self.decay_optimizer_moments(decay=0.5)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}

@@ -110,9 +110,6 @@ class OptimizationParams(ParamGroup):
         self.position_lr_init = 0.0002
         self.position_lr_final = 0.00002
         self.position_lr_max_steps = 30_000
-        self.opacity_lr_init = 0.01
-        self.opacity_lr_final = 0.001
-        self.opacity_lr_max_steps = 30_000
         self.scaling_lr_init = 0.005
         self.scaling_lr_final = 0.0005
         self.scaling_lr_max_steps = 30_000
@@ -123,18 +120,21 @@ class OptimizationParams(ParamGroup):
         # -- Spectral --> LR --
         self.feature_lr = 0.0025
         self.percent_dense = 0.01
-        self.opacity_reset_interval = 3000
-        # self.opacity_reset_interval = 6000
+        # self.opacity_reset_interval = 3000
+        self.opacity_reset_interval = 6000
         # self.lambda_dssim = 0.005                 # spectral
-        # self.lambda_dssim = 0.25              # R2
-        self.lambda_dssim = 0.80              # Test
+        self.lambda_dssim = 0.25              # R2
+        # self.lambda_dssim = 0.80              # Test
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
-        self.densify_from_iter = 500           # spectral + R2
+        # self.densify_from_iter = 500           # spectral + R2
+        self.densify_from_iter = 50000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
         # self.densify_grad_threshold = 0.00050   # R2
+        # self.densify_grad_threshold = 0.00015
         self.densify_grad_threshold = 0.00025
+        # self.densify_grad_threshold = 0.00017
         # self.densify_grad_threshold = 0.005
         self.switch_iter = 1_500
 
@@ -151,7 +151,7 @@ class OptimizationParams(ParamGroup):
 
         # -- Spectral --> extra --
         self.brdf_mlp_lr_init = 1.6e-2
-        self.brdf_mlp_lr_final = 1.6e-3 
+        self.brdf_mlp_lr_final = 1.6e-3
         self.brdf_mlp_lr_delay_mult = 0.01
         self.brdf_mlp_lr_max_steps = 30_000
         self.normal_lr = 0.0002
@@ -180,20 +180,31 @@ class OptimizationParams(ParamGroup):
         # self.compton_lr_final = 0.0001
         # self.compton_lr_max_steps = 30000
 
+        # Density
+        self.opacity_lr_init = 0.0001
+        self.opacity_lr_final = 0.00001
+        self.opacity_lr_max_steps = 30_000
         # PE
-        self.basis0_lr_init = 0.0005
-        self.basis0_lr_final = 0.00005
+        self.basis0_lr_init = 0.001
+        self.basis0_lr_final = 0.0001
         self.basis0_lr_max_steps = 30000
         # Compton
-        self.basis1_lr_init = 0.0001
-        self.basis1_lr_final = 0.00001
+        self.basis1_lr_init = 0.001
+        self.basis1_lr_final = 0.0001
         self.basis1_lr_max_steps = 30000
         # K-edge
-        self.basis2_lr_init = 0.0001
-        self.basis2_lr_final = 0.00001
+        self.basis2_lr_init = 0.02
+        self.basis2_lr_final = 0.0002
         self.basis2_lr_max_steps = 30000
 
-        self.lambda_tv_basis  = 1e-3
+        self.frac_warmup_iters = 1000
+        self.energy_warmup_iters  = 6000
+        self.energy_lr_after_warmup = 1e-4
+
+        # self.lambda_tv_basis  = 1e-3
+        self.lambda_tv_basis_pe   = 1e-4
+        self.lambda_tv_basis_comp = 4e-4
+        
         self.lambda_dirichlet = 1e-4
         self.lambda_ortho     = 1e-3
 

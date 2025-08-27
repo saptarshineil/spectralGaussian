@@ -24,7 +24,7 @@ from glob import glob
 import torch
 
 import matplotlib.pyplot as plt
-from utils.spectralCT_utils import analytic_fraction_2, analytic_fraction_3 
+from utils.spectralCT_utils import pe_compton_from_density, analytic_fraction_2, analytic_fraction_3 
 
 
 mode_id = {
@@ -603,6 +603,7 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.clip(rhos, 1e-6, None)
         # rhos = rhos.astype(np.float32)
 
+        # rhos = point_cloud[:, 3:4] * 10.0
         rhos = point_cloud[:, 3:4]
 
         # rho = 0.01759
@@ -611,10 +612,16 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
+        # ratio = [0.6, 0.4]
+        # fractions = np.tile(ratio, (point_cloud.shape[0], 1)).astype(np.float32)
+        # fractions += np.random.normal(0, 0.01, size=fractions.shape)  # Increased noise stddev to 0.4
+        # fractions = np.clip(fractions, 1e-6, None)
+        # fractions = fractions / fractions.sum(axis=1, keepdims=True)
         if n_bcoeffs == 2:
-            fractions = analytic_fraction_2(rhos[:,0])
-        else:
-            fractions = analytic_fraction_3(rhos[:,0])
+            # fractions = analytic_fraction_2(rhos[:,0])
+            fractions, rho0_used, alpha_used = pe_compton_from_density(rhos[:,0])
+        # else:
+        #     fractions = analytic_fraction_3(rhos[:,0])
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
         # global_frac = np.array([0.0329, 0.9671], dtype=np.float32)
