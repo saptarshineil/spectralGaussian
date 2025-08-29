@@ -147,40 +147,47 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         bfunc_PE(E_keV),
     #         bfunc_Compton(E_keV)
     #     ], dim=1)
-    # if n_bcoeffs == 3:
-    #     ckpt = torch.load(os.path.join(model_path, f"kedge_{iteration:06d}.pt"),
-    #                       map_location="cuda")
-    #     E_grid = ckpt["E_grid"].cuda()
-    #     bfunc_K = BFuncKedge(E_grid).cuda()
-    #     bfunc_K.load_state_dict(ckpt["state_dict"])
-    #     bfunc_K.eval()
-    #     # uniform mid-point rule weights from stored grid
-    #     dE = (E_grid[-1] - E_grid[0]) / E_grid.numel()
-    #     w_k = torch.full_like(E_grid, dE)
-    # else:
-    #     # use the same quadrature as training
-    #     N_samples = 64
-    #     E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
-    #     bfunc_K = None
+    if n_bcoeffs == 3:
+        ckpt = torch.load(os.path.join(model_path, f"kedge_{iteration:06d}.pt"),
+                          map_location="cuda")
+        E_grid = ckpt["E_grid"].cuda()
+        bfunc_K = BFuncKedge(E_grid).cuda()
+        bfunc_K.load_state_dict(ckpt["state_dict"])
+        bfunc_K.eval()
+        # uniform mid-point rule weights from stored grid
+        dE = (E_grid[-1] - E_grid[0]) / E_grid.numel()
+        w_k = torch.full_like(E_grid, dE)
+    else:
+        # use the same quadrature as training
+        N_samples = 64
+        E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
+        bfunc_K = None
 
     # (K, C_basis): PE/Compton[/Kedge] evaluated on the grid
     # B_E = get_B_E(E_grid, bfunc_K)  # shape (K, n_bcoeffs)
 
-    # ------------------------------------
-    # Incident spectra & I0 (keep in sync)
-    # ------------------------------------
-    # Keep these values identical to training (or load from metadata if you stored them).
-    # I0_low  = 1136.8784583333334
-    # I0_high = 2026.8482152777776
+    I0_low  = 1136.8784583333334
+    I0_high = 2026.8482152777776
 
-    # E_grid_np = E_grid.detach().cpu().numpy()
-    # S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np)   # (K,)
-    # S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)   # (K,)
-    # S = torch.stack([S_low, S_high], dim=0)                             # (C_spectra, K)
-    # I0_scalar = torch.sum(S * w_k, dim=1)
+    E_grid_np = E_grid.detach().cpu().numpy()
+    S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np)   # (K,)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)   # (K,)
+    S = torch.stack([S_low, S_high], dim=0)                             # (C_spectra, K)
+    I0_scalar = torch.sum(S * w_k, dim=1)
 
-    # g = torch.tensor([303.1, 1.2], device='cuda', dtype=torch.float32)
-    # g = torch.tensor([128.1, 0.88], device='cuda', dtype=torch.float32)
+    with torch.no_grad():
+        B_E = get_B_E(E_grid, None)             # (K, C)
+        S_avg   = 0.5 * (S[0] + S[1])                  # (K,)
+        # weights = (w_k * S_avg).clamp_min(1e-12)       # (K,)
+        # m = torch.sum(B_E * weights[:, None], dim=0)   # (C,)
+        # B_E_cond = B_E / m.clamp_min(1e-12)[None, :]   # (K, C)
+
+        W = (w_k * S_avg).clamp_min(1e-12)                    # (K,)
+        G = (B_E * W[:, None]).T @ B_E                        # (C,C)
+        # numerical: add small diagonal
+        G = G + 1e-6 * torch.eye(G.shape[0], device=G.device)
+        L = torch.linalg.cholesky(G)                          # G = L L^T
+        B_E_cond = B_E @ torch.cholesky_inverse(L)
 
 
     for spectral_id in list(range(0, n_spectra)):
@@ -191,8 +198,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
-        E_s = E[spectral_id]
-        bfuncs = get_B_E_at_energy(E, None, E_s)
+        # E_s = E[spectral_id]
+        # bfuncs = get_B_E_at_energy(E, None, E_s)
 
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
             torch.cuda.synchronize()
@@ -200,20 +207,17 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
             bcoeff_img = results["bcoeffs"]
             torch.cuda.synchronize()
 
-            # # rendering = (bcoeff_img * B_E[spectral_id, :, None, None]).sum(dim=0, keepdim=True)
-            # mu_E = (bcoeff_img.unsqueeze(0) * (B_E * g[None,:])[..., None, None]).sum(dim=1)
-            # # mu_E = (bcoeff_img.unsqueeze(0) * B_E[..., None, None]).sum(dim=1)
-
-            # I_pred = torch.sum(S[spectral_id, :, None, None] *
-            #                    torch.exp(-mu_E) * w_k[:, None, None],
-            #                    dim=0)
-
-            # I_pred = torch.clamp(I_pred, min=1e-6 * I0_scalar[spectral_id])
-            # rendering  = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
-            # rendering /= 5.0
-
-            rendering = (bcoeff_img * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
+            # rendering = (bcoeff_img * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
             
+            mu_E = (bcoeff_img.unsqueeze(0) * B_E[..., None, None]).sum(dim=1)
+
+            I_pred = torch.sum(S[spectral_id, :, None, None] *
+                               torch.exp(-mu_E) * w_k[:, None, None],
+                               dim=0)
+
+            I_pred = torch.clamp(I_pred, min=1e-6 * I0_scalar[spectral_id])
+            rendering  = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
+
             gt = view.spectral_images[spectral_id][0:1,:,:]
             
             torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))

@@ -5,7 +5,7 @@ from utils.general_utils import interp1d
 
 
 C = 510.999
-EPSILON = 1e-8
+EPSILON = 1e-12
 
 
 # ------------------------ Fraction initialization ------------------------
@@ -78,8 +78,7 @@ def analytic_fraction_3(
 # ------------------------ Photoelectric + Compton basis functions ------------------------
 def bfunc_PE(E_keV: torch.Tensor) -> torch.Tensor:
     E_keV = torch.as_tensor(E_keV, dtype=torch.float32, device=E_keV.device)
-    return torch.pow(E_keV, -3.0)         
-
+    return torch.pow(E_keV, -3.0)       
 
 def bfunc_Compton(E_keV: torch.Tensor,
                   eps: float = EPSILON) -> torch.Tensor:
@@ -105,6 +104,106 @@ def bfunc_Compton(E_keV: torch.Tensor,
     term4 = (1.0 + 3.0 * a) / denom_1_2a2
 
     return (term1 * term2 + term3 - term4)
+
+def _col_scales_at_pivot(E_grid: torch.Tensor, bfunc_Kedge, E_ref: float):
+    eref = torch.as_tensor(E_ref, dtype=E_grid.dtype, device=E_grid.device)
+    s_pe = bfunc_PE(eref).clamp(min=1e-30)
+    s_co = bfunc_Compton(eref).clamp(min=1e-30)
+    scales = [s_pe, s_co]
+    if bfunc_Kedge is not None:
+        scales.append(torch.tensor(1.0, device=E_grid.device, dtype=E_grid.dtype))
+    return torch.stack(scales)
+
+def get_B_E(E_grid, bfunc_Kedge, *, normalize=True, E_ref: float = 70.0):
+    B = (torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid)], dim=1)
+         if bfunc_Kedge is None else
+         torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid), bfunc_Kedge()], dim=1))
+    if normalize:
+        s = _col_scales_at_pivot(E_grid, bfunc_Kedge, E_ref)  # (C,)
+        B = B / s[None, :]
+    return B
+
+def get_B_E_at_energy(E_grid, bfunc_Kedge, E, *, normalize=True, E_ref: float = 70.0):
+    B1 = (torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=-1)
+          if bfunc_Kedge is None else
+          torch.stack([bfunc_PE(E), bfunc_Compton(E), interp1d(E_grid, bfunc_Kedge(), E)], dim=-1))
+    if normalize:
+        s = _col_scales_at_pivot(E_grid, bfunc_Kedge, E_ref)
+        B1 = B1 / s
+    return B1
+
+
+# ------------------------ Discretized energy grid ------------------------
+def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
+    e0 = torch.tensor(E_min, device=device, dtype=dtype)
+    e1 = torch.tensor(E_max, device=device, dtype=dtype)
+    edges = torch.logspace(torch.log10(e0), torch.log10(e1), steps=N+1, device=device, dtype=dtype)
+    E_k = 0.5*(edges[:-1] + edges[1:])
+    w_k = (edges[1:] - edges[:-1])
+    return E_k, w_k
+
+def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np):
+    spek = spekpy.Spek(kvp=kvp, th=12)
+    if filt_mat is not None:
+        spek.filter(filt_mat, filt_thick)
+    E_native, S_native = spek.get_spectrum()         # photons / keV / pixel
+    S = np.interp(E_grid_np, E_native, S_native)     # resample
+    S /= np.trapz(S, E_grid_np)                      # normalise
+    return torch.tensor(S*I0, device='cuda', dtype=torch.float32)
+
+
+def stable_simplex(
+    logits: torch.Tensor,
+    tau: float = 1.0,
+    eps: float = 0.60,
+    clip: float = 30.0,
+    target: float = 0.5,     # kept for C>=3 path
+    norm: str = "std",       # kept for C>=3 path
+    s_ref_binary: float = 10.0,  # NEW: fixed scale for C=2
+) -> torch.Tensor:
+    """
+    Map unconstrained logits -> probabilities with:
+      • centering; 
+      • for C==2: fixed scaling (avoids zero-gradient trap);
+      • for C>=3: gentle row-wise scaling to avoid saturation;
+      • temperature tau;
+      • clipping;
+      • epsilon floor via convex mix with uniform.
+
+    Returns a tensor with last-dim summing to 1.
+    """
+    z = logits - logits.mean(dim=-1, keepdim=True)
+    k = z.shape[-1]
+
+    if k == 2:
+        # ---- binary-safe path: constant scale -> nonzero ∂p/∂logits ----
+        z = z / (max(tau, 1e-6) * s_ref_binary)
+    else:
+        # ---- multi-class path: mild normalization to avoid saturation ----
+        if norm == "std":
+            s = z.std(dim=-1, keepdim=True, unbiased=True).clamp_min(1e-6)
+        elif norm == "max":
+            s = z.abs().amax(dim=-1, keepdim=True).clamp_min(1e-6)
+        else:
+            s = torch.ones_like(z[..., :1])
+
+        scale = torch.maximum(s / target, torch.ones_like(s))
+        z = z / (scale * max(tau, 1e-6))
+
+    z = z.clamp(min=-clip, max=clip)
+    p_soft = torch.softmax(z, dim=-1)
+
+    if eps > 0.0:
+        u = p_soft.new_full(p_soft.shape, 1.0 / k)
+        p = (1.0 - eps) * p_soft + eps * u
+    else:
+        p = p_soft
+    return p
+
+
+
+
+
 
 
 # ------------------------ Learned K-edge basis function ------------------------
@@ -132,47 +231,3 @@ class BFuncKedge(torch.nn.Module):
         spec  = (tail + step).pow(-3)
 
         return spec / spec.max()
-
-
-# ------------------------ Discretized energy grid ------------------------
-def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
-    dE   = (E_max - E_min) / N                       # scalar
-    E_k  = torch.linspace(E_min + 0.5*dE,            # mid-points
-                        E_max - 0.5*dE,
-                        steps=N,
-                        device=device,
-                        dtype=dtype)               # (K,)
-    w_k  = torch.full((N,), dE, device=device, dtype=dtype)  # (K,)
-    return E_k, w_k
-
-def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np):
-    spek = spekpy.Spek(kvp=kvp, th=12)
-    if filt_mat is not None:
-        spek.filter(filt_mat, filt_thick)
-    E_native, S_native = spek.get_spectrum()         # photons / keV / pixel
-    S = np.interp(E_grid_np, E_native, S_native)     # resample
-    S /= np.trapz(S, E_grid_np)                      # normalise
-    return torch.tensor(S*I0, device='cuda', dtype=torch.float32)
-
-def get_B_E(E_grid, bfunc_Kedge):
-    if bfunc_Kedge is None:
-        return torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid)], dim=1)
-    else:
-        return torch.stack([bfunc_PE(E_grid), bfunc_Compton(E_grid), bfunc_Kedge()], dim=1)
-
-def get_B_E_at_energy(E_grid, bfunc_Kedge, E):
-    if bfunc_Kedge is None:
-        return torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=-1)
-    else:    
-        Kedge = interp1d(E_grid, bfunc_Kedge(), E)
-        return torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)
-
-# def get_B_E_at_energy(E_grid, bfunc_Kedge, E):
-#     if bfunc_Kedge is None:
-#         b = torch.stack([bfunc_PE(E), bfunc_Compton(E)], dim=-1)
-#     else:
-#         Kedge = interp1d(E_grid, bfunc_Kedge(), E)
-#         b = torch.stack([bfunc_PE(E), bfunc_Compton(E), Kedge], dim=-1)
-#     # Normalize columns for better conditioning (ρ will absorb the scale):
-#     b = b / (b.norm(p=2) + 1e-12)
-#     return b

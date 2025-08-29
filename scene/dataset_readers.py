@@ -624,9 +624,6 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         #     fractions = analytic_fraction_3(rhos[:,0])
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
-        # global_frac = np.array([0.0329, 0.9671], dtype=np.float32)
-        # fractions = np.tile(global_frac, (point_cloud.shape[0], 1))
-
         ply_path = os.path.join(path, "init_pcd.ply")
         storePly(ply_path, xyz, rhos, fractions)
 

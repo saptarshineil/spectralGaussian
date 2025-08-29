@@ -98,14 +98,46 @@ def training(
     E = torch.tensor([50.0, 120.0], device='cuda', dtype=torch.float32)
     # E = torch.tensor([50.0, 80.0], device='cuda', dtype=torch.float32)
 
+    I0_low = 1136.8784583333334
+    I0_high = 2026.8482152777776
+    # I0_high = 1594.836
+
+    N_samples = 64
+    # If dataset is EID (no bins) --> sample full spectrum
+    E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
+    E_grid_np = E_grid.cpu().numpy()
+
+    S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)
+    # S_high = get_scaled_spectrum(80, "Al", 1.0, I0_high, E_grid_np)
+
+    S         = torch.stack([S_low, S_high])      # (C=2, K)
+    I0_scalar = torch.sum(S * w_k, dim=1)
+
+
+    # ------------------------------------------
+    bfunc_Kedge = None
+    basis_opt = None
+    # if n_bcoeffs == 3:
+    #     bfunc_Kedge = BFuncKedge(E_grid).cuda()
+    #     basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=1e-4)
+
+    B_E = get_B_E(E_grid, bfunc_Kedge)
+
+    # B_E_raw = get_B_E(E_grid, None, normalize=True, E_ref=70.0)  # (K,C)
+    # S_avg   = 0.5 * (S[0] + S[1])
+    # W = (w_k * S_avg).clamp_min(1e-12)
+    # G = (B_E_raw * W[:, None]).T @ B_E_raw
+    # G = G + 1e-6 * torch.eye(G.shape[0], device=G.device)
+    # L = torch.linalg.cholesky(G)
+    # B_E = B_E_raw @ torch.cholesky_inverse(L)
+    
+    
     energy_logits = torch.nn.Parameter(
         torch.tensor([1.0, 1.0], device='cuda', dtype=torch.float32)).requires_grad_(False)
 
     FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
     gaussians.freeze_rhos()
-
-    # log_gains = torch.nn.Parameter(torch.zeros(n_bcoeffs, device='cuda'))
-    # basis_gain_opt = torch.optim.Adam([log_gains], lr=1e-3)
 
     # --------------------------------------
     # Set up 3D TV loss
@@ -149,7 +181,6 @@ def training(
         if (iteration - 1) == FRAC_WARMUP_ITERS:
             gaussians.unfreeze_rhos()
             gaussians.update_learning_rate(iteration)
-            gaussians.reset_bcoeffs()
             print(f"[warmup] Unfroze ρ at iter {iteration}, lr now scheduled.")
         
         # Track losses
@@ -164,43 +195,48 @@ def training(
             render_pkg["radii"], 
         )
 
-        # tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
-        # tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
-        # bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
+        tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
+        tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
+        bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
 
         # Compute loss per spectral channel
         for spectral_id in spectral_ids:
             
             # ---------- Spectral Beer-Lambert ----------
-            E_s = E[spectral_id]
-            bfuncs = get_B_E_at_energy(E, None, E_s)
-            # g = log_gains.exp()
+            bfuncs = get_B_E_at_energy(E, None, E[spectral_id])
             
-            image = (bcoeff_image * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
-            # image = (bcoeff_image * (bfuncs * g)[:, None, None]).sum(dim=0, keepdim=True)
+            # image = (bcoeff_image * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
+
+            μ_E = (bcoeff_image.unsqueeze(0) * B_E[..., None, None]).sum(1)
+
+            I_pred = torch.sum(S[spectral_id,:,None,None] *
+                            torch.exp(-μ_E) * w_k[:,None,None],
+                            dim=0)
+            I_pred = torch.clamp(I_pred, min=1e-6 * I0_scalar[spectral_id])
+            image = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
 
             # ---------- Loss ----------
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id].cuda()
 
-            if (iteration - 1) % 500 == 0:
-                print(spectral_id, ":")
-                print("μ mean/gt mean:", image[0].mean().item(), gt_image[0].mean().item())
-                print("μ min/max     :", image[0].min().item(), image[0].max().item())
-                print("gt min/max    :", gt_image[0].min().item(), gt_image[0].max().item())
-                with torch.no_grad():
-                    # Per-basis contribution images: C×H×W
-                    contrib = bcoeff_image * bfuncs[:, None, None]
+            # if (iteration - 1) % 500 == 0:
+            #     print(spectral_id, ":")
+            #     print("μ mean/gt mean:", image[0].mean().item(), gt_image[0].mean().item())
+            #     print("μ min/max     :", image[0].min().item(), image[0].max().item())
+            #     print("gt min/max    :", gt_image[0].min().item(), gt_image[0].max().item())
+            #     with torch.no_grad():
+            #         # Per-basis contribution images: C×H×W
+            #         contrib = bcoeff_image * bfuncs[:, None, None]
 
-                    # Quick scalars per basis
-                    mean_per_basis = contrib.mean(dim=(1, 2)).tolist()
-                    min_per_basis  = contrib.amin(dim=(1, 2)).tolist()
-                    max_per_basis  = contrib.amax(dim=(1, 2)).tolist()
+            #         # Quick scalars per basis
+            #         mean_per_basis = contrib.mean(dim=(1, 2)).tolist()
+            #         min_per_basis  = contrib.amin(dim=(1, 2)).tolist()
+            #         max_per_basis  = contrib.amax(dim=(1, 2)).tolist()
 
-                    print("μ per-basis mean:", [float(x) for x in mean_per_basis])
-                    print("μ per-basis min :", [float(x) for x in min_per_basis])
-                    print("μ per-basis max :", [float(x) for x in max_per_basis])
-                print("---------------")
+            #         print("μ per-basis mean:", [float(x) for x in mean_per_basis])
+            #         print("μ per-basis min :", [float(x) for x in min_per_basis])
+            #         print("μ per-basis max :", [float(x) for x in max_per_basis])
+            #     print("---------------")
 
             if (iteration - 1) % 1000 == 0 or iteration == opt.iterations:
                 with torch.no_grad():
@@ -275,12 +311,11 @@ def training(
             losses_per_energy.append(loss)
 
         total_loss = (energy_logits[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
-        # total_loss += bcoeff_loss
+        total_loss += bcoeff_loss
 
-        # raw = torch.cat(gaussians._fracs, dim=1)
-        # p = torch.softmax(raw, dim=1).clamp_min(1e-6)
-        # entropy = -(p * p.log()).sum(dim=1).mean()
-        # total_loss -= 1e-4 * entropy
+        p = gaussians.get_fracs.clamp_min(1e-6)
+        entropy = -(p * p.log()).sum(dim=1).mean()
+        total_loss += 1e-3 * entropy
 
         total_loss.backward()
        
@@ -371,16 +406,16 @@ def training(
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 if not gaussians.rhos_are_frozen():
                     gaussians.reset_bcoeffs()
-                # t = iteration / float(opt.iterations)
-                # # prior_mix = max(0.0, 0.6 * (1.0 - t))
-                # prior_mix = 0.0 if iteration >= 1000 else 0.6 * (1.0 - t)
-                # gaussians.reset_bcoeffs(
-                #     reset_rho=None,     # let it pick q-clip
-                #     min_frac=1e-3,
-                #     use_prior=True,
-                #     prior_mix=prior_mix,
-                #     q_clip=0.98,
-                # )
+                    # t = iteration / float(opt.iterations)
+                    # # prior_mix = max(0.0, 0.6 * (1.0 - t))
+                    # prior_mix = 0.0 if iteration >= 1000 else 0.6 * (1.0 - t)
+                    # gaussians.reset_bcoeffs(
+                    #     reset_rho=None,     # let it pick q-clip
+                    #     min_frac=1e-3,
+                    #     use_prior=True,
+                    #     prior_mix=prior_mix,
+                    #     q_clip=0.98,
+                    # )
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -395,8 +430,6 @@ def training(
                 # if basis_opt:
                 #     basis_opt.step()
                 #     basis_opt.zero_grad(set_to_none=True)
-                # basis_gain_opt.step()
-                # basis_gain_opt.zero_grad(set_to_none=True)
 
             # if n_spectra > 0:
             #     if iteration > 1000 and not combine_spectra:

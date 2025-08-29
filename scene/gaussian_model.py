@@ -30,6 +30,8 @@ from utils.gaussian_utils import inverse_softplus
 #     build_scaling_rotation,
 # )
 
+from utils.spectralCT_utils import stable_simplex
+
 
 class GaussianModel:
 
@@ -189,6 +191,12 @@ class GaussianModel:
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
         return torch.softmax(raw, dim=1)
+        # return stable_simplex(
+        #     raw,
+        #     tau=1.0,
+        #     eps=0.10,              # 60% min-uniform mix early; tune 0.2–0.6 if desired
+        #     s_ref_binary=10.0,     # prevents zero-grad trap for C==2
+        # )
     # def get_fracs(self):
     #     raw = torch.cat(self._fracs, dim=1)
     #     probs = torch.softmax(raw, dim=1)
@@ -480,18 +488,9 @@ class GaussianModel:
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == param:
-                # NEW: honor ρ warm-up
                 if param == "rhos" and getattr(self, "_rho_frozen", False):
                     param_group["lr"] = 0.0
                     return 0.0
-                # if param == "rhos" and not getattr(self, "_rho_frozen", False):
-                #     lr = getattr(self, f"{param}_scheduler_args")(iteration)
-                #     # Slow ρ down until (FRAC_WARMUP_ITERS + K)
-                #     K = 1000
-                #     if iteration < (self.frac_warm_cutoff if hasattr(self, "frac_warm_cutoff") else 0):
-                #         pass
-                #     param_group["lr"] = lr * (0.25 if iteration < (1000 + K) else 1.0)
-                #     return param_group["lr"]
                 try:
                     if param.endswith(str(self.active_spectra)):
                         spectral_id = int(param[-1])
@@ -570,7 +569,7 @@ class GaussianModel:
 
     # def reset_bcoeffs(self,
     #                   reset_rho: float = None,
-    #                   min_frac: float = 1e-3,
+    #                   min_frac: float = 0.05,
     #                   use_prior: bool = True,
     #                   prior_mix: float = 0.5,     # 0(no prior) .. 1(full prior)
     #                   q_clip: float = 0.98):      # percentile clip for rho
@@ -638,8 +637,38 @@ class GaussianModel:
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
+    
+    # def replace_tensor_to_optimizer(self, tensor, name):
+    #     optimizable_tensors = {}
+    #     for group in self.optimizer.param_groups:
+    #         if group["name"] != name:
+    #             continue
+    #         old_param = group["params"][0]
+    #         state = self.optimizer.state.get(old_param, None) or {}
+    #         # fresh moments matching new tensor shape
+    #         state["exp_avg"]    = torch.zeros_like(tensor)
+    #         state["exp_avg_sq"] = torch.zeros_like(tensor)
+
+    #         # swap
+    #         if old_param in self.optimizer.state:
+    #             del self.optimizer.state[old_param]
+    #         new_param = nn.Parameter(tensor.requires_grad_(True))
+    #         group["params"][0] = new_param
+    #         self.optimizer.state[new_param] = state
+    #         optimizable_tensors[name] = new_param
+    #     return optimizable_tensors
 
     # ------------------ Densification / Pruning ------------------
+    # def _set_subset_rho_in_activation_space(self, idx, rho_new_act):
+    #     """
+    #     idx: (M,) LongTensor, indices of parents to modify
+    #     rho_new_act: (M,1) tensor in ACTIVATED space (after Softplus)
+    #     """
+    #     with torch.no_grad():
+    #         raw = self._rhos.clone()
+    #         raw[idx] = self.rhos_inverse_activation(rho_new_act)
+    #     self._rhos = self.replace_tensor_to_optimizer(raw, "rhos")["rhos"]
+
     def densify_and_prune(self, 
         max_grad, 
         min_opacity, 
@@ -665,9 +694,10 @@ class GaussianModel:
 
         # -- R2-Gaussian --
         # Prune gaussians with too small density
-        bcoeffs = self.get_bcoeffs
+        # bcoeffs = self.get_rhos
         # prune_mask = ((bcoeffs[:,0] < min_opacity) & (bcoeffs[:,1] < min_opacity))
-        prune_mask = (bcoeffs < min_opacity).all(dim=1)
+        # prune_mask = (bcoeffs < min_opacity).all(dim=1)
+        prune_mask = (self.get_rhos < min_opacity).squeeze()
         
         # Prune gaussians outside the bbox
         if bbox is not None:
@@ -710,7 +740,20 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_max_radii2D = self.max_radii2D[selected_pts_mask]
-        new_rhos = self._rhos[selected_pts_mask]
+        # new_rhos = self._rhos[selected_pts_mask]
+
+        # new_rhos = self.rhos_inverse_activation(
+        #     self.get_rhos[selected_pts_mask] * 0.5
+        # )
+        # self._rhos[selected_pts_mask] = new_rhos
+
+        with torch.no_grad():
+            rho_sel     = self.get_rhos[selected_pts_mask]                                # (k,1) positive
+            rho_half    = 0.5 * rho_sel
+            new_rhos = self.rhos_inverse_activation(rho_half)                 # raw for child
+            # also write back the parent's halved ρ (raw)
+            self._rhos[selected_pts_mask] = new_rhos
+
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
 
@@ -751,7 +794,16 @@ class GaussianModel:
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
-        new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
+        
+        # new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
+        # new_rhos = self.rhos_inverse_activation(
+        #     self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
+        # )
+
+        with torch.no_grad():
+            rho_parent   = self.get_rhos[selected_pts_mask]                 # (k,1)
+            rho_child    = (rho_parent / float(N)).repeat(N, 1)    # (kN,1)
+            new_rhos = self.rhos_inverse_activation(rho_child)
 
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)

@@ -133,6 +133,7 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000       # spectral + R2
         # self.densify_grad_threshold = 0.00050   # R2
         # self.densify_grad_threshold = 0.00015
+        # self.densify_grad_threshold = 0.00025
         self.densify_grad_threshold = 0.00025
         # self.densify_grad_threshold = 0.00017
         # self.densify_grad_threshold = 0.005
@@ -181,16 +182,16 @@ class OptimizationParams(ParamGroup):
         # self.compton_lr_max_steps = 30000
 
         # Density
-        self.opacity_lr_init = 0.0001
-        self.opacity_lr_final = 0.00001
+        self.opacity_lr_init = 0.001
+        self.opacity_lr_final = 0.0001
         self.opacity_lr_max_steps = 30_000
         # PE
-        self.basis0_lr_init = 0.001
-        self.basis0_lr_final = 0.0001
+        self.basis0_lr_init = 0.01
+        self.basis0_lr_final = 0.001
         self.basis0_lr_max_steps = 30000
         # Compton
-        self.basis1_lr_init = 0.001
-        self.basis1_lr_final = 0.0001
+        self.basis1_lr_init = 0.01
+        self.basis1_lr_final = 0.001
         self.basis1_lr_max_steps = 30000
         # K-edge
         self.basis2_lr_init = 0.02
@@ -202,8 +203,8 @@ class OptimizationParams(ParamGroup):
         self.energy_lr_after_warmup = 1e-4
 
         # self.lambda_tv_basis  = 1e-3
-        self.lambda_tv_basis_pe   = 1e-4
-        self.lambda_tv_basis_comp = 4e-4
+        self.lambda_tv_basis_pe   = 1e-3
+        self.lambda_tv_basis_comp = 4e-3
         
         self.lambda_dirichlet = 1e-4
         self.lambda_ortho     = 1e-3
