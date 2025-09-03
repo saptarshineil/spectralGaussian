@@ -16,7 +16,7 @@ from utils.loss_utils import (
 
 # from utils.loss_utils import l1_loss, ssim, tv_3d_loss, loss_cls_3d, predicted_normal_loss, delta_normal_loss, zero_one_loss
 from gaussian_renderer import render_r2, render_mu, render_fracs, network_gui
-from utils.spectralCT_utils import BFuncKedge, get_B_E, get_B_E_at_energy, energy_quadrature, get_scaled_spectrum
+from utils.spectralCT_utils import BFuncKedge, get_B_E, get_B_E_at_energy, energy_quadrature, get_scaled_spectrum, renormalize_col_at_pivot, bfunc_PE, bfunc_Compton, interp1d
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -47,6 +47,28 @@ def _print_grad_stats(tag, g : torch.Tensor):
         f"  p90  {torch.quantile(g_abs, .90):.3e}"
         f"  max  {g_abs.max():.3e}"
     )
+
+def orthogonalize_k_to_pe_compton(B_raw: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+    if B_raw.shape[1] < 3:
+        return B_raw
+
+    B12 = B_raw[:, :2]         # (K, 2)
+    b3  = B_raw[:, 2:3]        # (K, 1)
+
+    # M = B12^T W B12, rhs = B12^T W b3
+    BW  = B12 * W[:, None]
+    M   = BW.T @ B12 + 1e-6 * torch.eye(2, device=B_raw.device, dtype=B_raw.dtype)
+    rhs = BW.T @ b3
+
+    # Solve M c = rhs, project out: b3_orth = b3 - B12 c
+    c   = torch.cholesky_solve(rhs, torch.linalg.cholesky(M))
+    b3o = b3 - B12 @ c
+
+    # optional: renormalize at pivot (handled by get_B_E via _col_scales_at_pivot)
+    Bout = torch.cat([B12, b3o], dim=1)
+    return Bout
+
+
 
 
 def training(
@@ -95,46 +117,53 @@ def training(
 
     
     # E = torch.tensor([50.0, 70.0], dtype=torch.float32).cuda()
-    E = torch.tensor([50.0, 120.0], device='cuda', dtype=torch.float32)
+    # E = torch.tensor([50.0, 120.0], device='cuda', dtype=torch.float32)
+    E = torch.tensor([50.0, 80.0, 120.0], device='cuda', dtype=torch.float32)
     # E = torch.tensor([50.0, 80.0], device='cuda', dtype=torch.float32)
 
     I0_low = 1136.8784583333334
+    I0_mid = 1594.836
     I0_high = 2026.8482152777776
-    # I0_high = 1594.836
 
     N_samples = 64
     # If dataset is EID (no bins) --> sample full spectrum
     E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
     E_grid_np = E_grid.cpu().numpy()
+    w_k_np = w_k.cpu().numpy()
 
-    S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np)
-    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)
-    # S_high = get_scaled_spectrum(80, "Al", 1.0, I0_high, E_grid_np)
+    S_low  = get_scaled_spectrum(50, None, 0.0, I0_low, E_grid_np, w_k_np)
+    S_mid  = get_scaled_spectrum(80, "Al", 1.0, I0_mid, E_grid_np, w_k_np)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np, w_k_np)
 
-    S         = torch.stack([S_low, S_high])      # (C=2, K)
+    # S         = torch.stack([S_low, S_high])      # (C=2, K)
+    S         = torch.stack([S_low, S_mid, S_high])      # (C=2, K)
     I0_scalar = torch.sum(S * w_k, dim=1)
 
 
     # ------------------------------------------
     bfunc_Kedge = None
     basis_opt = None
-    # if n_bcoeffs == 3:
-    #     bfunc_Kedge = BFuncKedge(E_grid).cuda()
-    #     basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=1e-4)
+    if n_bcoeffs == 3:
+        bfunc_Kedge = BFuncKedge(E_grid).cuda()
 
-    B_E = get_B_E(E_grid, bfunc_Kedge)
+        with torch.no_grad():
+            bfunc_Kedge.set_gamma(0.5)
+            bfunc_Kedge.set_EK_init(50.0)
+            # bfunc_Kedge.set_EK_init(80.0)
 
-    # B_E_raw = get_B_E(E_grid, None, normalize=True, E_ref=70.0)  # (K,C)
-    # S_avg   = 0.5 * (S[0] + S[1])
-    # W = (w_k * S_avg).clamp_min(1e-12)
-    # G = (B_E_raw * W[:, None]).T @ B_E_raw
-    # G = G + 1e-6 * torch.eye(G.shape[0], device=G.device)
-    # L = torch.linalg.cholesky(G)
-    # B_E = B_E_raw @ torch.cholesky_inverse(L)
-    
-    
+        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
+
     energy_logits = torch.nn.Parameter(
-        torch.tensor([1.0, 1.0], device='cuda', dtype=torch.float32)).requires_grad_(False)
+        # torch.tensor([1.0, 1.0], device='cuda', dtype=torch.float32)
+        torch.ones(n_spectra, device='cuda', dtype=torch.float32)
+    ).requires_grad_(False)
+    
+    # def get_energy_weights():
+    #     # w = torch.softmax(energy_logits, dim=0) * n_spectra
+    #     w = energy_logits
+    #     return w
+    
+    # energy_opt = torch.optim.Adam([energy_logits], lr=1e-4)
 
     FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
     gaussians.freeze_rhos()
@@ -198,12 +227,68 @@ def training(
         tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
         tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
         bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
+        if n_bcoeffs == 3:
+            tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
+            bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
 
         # Compute loss per spectral channel
         for spectral_id in spectral_ids:
             
             # ---------- Spectral Beer-Lambert ----------
-            bfuncs = get_B_E_at_energy(E, None, E[spectral_id])
+            B_E = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None)
+            
+            # B_E_raw = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=True, E_ref=70.0)
+            # if n_bcoeffs == 3:
+            #     S_avg = 0.33 * (S[0] + S[1] + S[2])
+            #     W = (w_k * S_avg).clamp_min(1e-12)
+            #     B_E = orthogonalize_k_to_pe_compton(B_E_raw, W)
+            # else:
+            #     B_E = B_E_raw
+
+            # B_E_unnorm = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=False) 
+            
+            # if n_bcoeffs == 3: 
+            #     S_sum = S.sum(dim=0) # (K,) 
+            #     W = (w_k * S_sum).clamp_min(1e-12)
+            #     B12 = B_E_unnorm[:, :2] # (K,2) 
+            #     b3 = B_E_unnorm[:, 2:3] # (K,1) 
+            #     BW = B12 * W[:, None] 
+            #     M = BW.T @ B12 + 1e-6 * torch.eye(2, device=B12.device, dtype=B12.dtype) 
+            #     rhs = BW.T @ b3 
+            #     c = torch.cholesky_solve(rhs, torch.linalg.cholesky(M)) # (2,1) # Orthogonalized columns (still UNNORMALIZED) 
+            #     B_E_ortho = torch.cat([B12, b3 - B12 @ c], dim=1) # Now normalize *all* columns at the same pivot 
+            #     # s_pe = renormalize_col_at_pivot(E_grid, B_E_ortho, 0, E_ref=70.0) 
+            #     # s_co = renormalize_col_at_pivot(E_grid, B_E_ortho, 1, E_ref=70.0) 
+            #     # s_ke = renormalize_col_at_pivot(E_grid, B_E_ortho, 2, E_ref=70.0) 
+            #     B_E, s = renormalize_col_at_pivot(E_grid, B_E_ortho, E_ref=70.0)
+            #     s_pe, s_co, s_ke = s.unbind()
+            #     # B_E = B_E_ortho 
+            # else: # 2-basis: just normalize at the pivot 
+            #     B_E = get_B_E(E_grid, None, normalize=True, E_ref=70.0)
+
+            # bfuncs = get_B_E_at_energy(E, None, E[spectral_id])
+            bfuncs = get_B_E_at_energy(
+                E_grid,
+                bfunc_Kedge if n_bcoeffs == 3 else None,
+                E[spectral_id]
+            )
+
+            # if n_bcoeffs == 3:
+            #     B1 = torch.stack([
+            #         bfunc_PE(E[spectral_id]),
+            #         bfunc_Compton(E[spectral_id]),
+            #         interp1d(E_grid, bfunc_Kedge(), E[spectral_id])
+            #     ], dim=0)                                          # (3,)
+
+            #     # project K column like we did for B_E:
+            #     B12_E = B1[:2]                                     # (2,)
+            #     b3_E  = B1[2:3]                                    # (1,)
+            #     b3o_E = b3_E - (B12_E @ c).view(1)                 # (1,)
+
+            #     # normalize by the same pivot scales we captured above
+            #     bfuncs = torch.stack([B1[0]/s_pe, B1[1]/s_co, b3o_E.squeeze()/s_ke], dim=0)
+            # else:
+            #     bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id])
             
             # image = (bcoeff_image * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
 
@@ -245,40 +330,59 @@ def training(
                     out_dir = os.path.join(scene.model_path, "analysis", "fracs")
                     os.makedirs(out_dir, exist_ok=True)
 
-                    if fracs_img.shape[0] == 2:
-                        f_pe, f_comp = fracs_img[0], fracs_img[1]
-                        ratio = (f_pe + 1e-8) / (f_comp + 1e-8)
-                        torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"f_pe_{iteration:06d}.png"))
-                        torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"f_comp_{iteration:06d}.png"))
-                        r = ratio.numpy()
-                        lo, hi = np.percentile(r[np.isfinite(r)], [1, 99])
-                        r = np.clip((r - lo) / (hi - lo + 1e-12), 0, 1)
-                        torchvision.utils.save_image(torch.from_numpy(r)[None], os.path.join(out_dir, f"ratio_{iteration:06d}.png"))
-                    else:
-                        f = fracs_img.numpy()
-                        f = f / (f.sum(axis=0, keepdims=True) + 1e-8)
-                        rgb = np.moveaxis(f, 0, -1)  # (H,W,3)
-                        torchvision.utils.save_image(torch.from_numpy(rgb).permute(2,0,1), os.path.join(out_dir, f"fracs_rgb_{iteration:06d}.png"))
+                    f_pe, f_comp = fracs_img[0], fracs_img[1]
+                    torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"f_pe_{iteration:06d}.png"))
+                    torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"f_comp_{iteration:06d}.png"))
+                    if fracs_img.shape[0] == 3:
+                        f_k = fracs_img[2]
+                        torchvision.utils.save_image(f_k[None], os.path.join(out_dir, f"f_kedge_{iteration:06d}.png"))
 
                     bc = render_mu(viewpoint_cam, gaussians, pipe)
                     bcoeffs_img = bc["bcoeffs"].detach().cpu()  
                     out_dir = os.path.join(scene.model_path, "analysis", "bcoeffs")
                     os.makedirs(out_dir, exist_ok=True)
 
-                    if bcoeffs_img.shape[0] == 2:
-                        f_pe, f_comp = bcoeffs_img[0], bcoeffs_img[1]
-                        ratio = (f_pe + 1e-8) / (f_comp + 1e-8)
-                        torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"f_pe_{iteration:06d}.png"))
-                        torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"f_comp_{iteration:06d}.png"))
-                        r = ratio.numpy()
-                        lo, hi = np.percentile(r[np.isfinite(r)], [1, 99])
-                        r = np.clip((r - lo) / (hi - lo + 1e-12), 0, 1)
-                        torchvision.utils.save_image(torch.from_numpy(r)[None], os.path.join(out_dir, f"ratio_{iteration:06d}.png"))
-                    else:
-                        f = bcoeffs_img.numpy()
-                        f = f / (f.sum(axis=0, keepdims=True) + 1e-8)
-                        rgb = np.moveaxis(f, 0, -1)  # (H,W,3)
-                        torchvision.utils.save_image(torch.from_numpy(rgb).permute(2,0,1), os.path.join(out_dir, f"fracs_rgb_{iteration:06d}.png"))
+                    f_pe, f_comp = bcoeffs_img[0], bcoeffs_img[1]
+                    torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"b_pe_{iteration:06d}.png"))
+                    torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"b_comp_{iteration:06d}.png"))
+                    if bcoeffs_img.shape[0] == 3:
+                        b_k = bcoeffs_img[2]
+                        torchvision.utils.save_image(b_k[None], os.path.join(out_dir, f"b_kedge_{iteration:06d}.png"))
+                        
+                    # if fracs_img.shape[0] == 2:
+                    #     f_pe, f_comp = fracs_img[0], fracs_img[1]
+                    #     # ratio = (f_pe + 1e-8) / (f_comp + 1e-8)
+                    #     torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"f_pe_{iteration:06d}.png"))
+                    #     torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"f_comp_{iteration:06d}.png"))
+                    #     r = ratio.numpy()
+                    #     lo, hi = np.percentile(r[np.isfinite(r)], [1, 99])
+                    #     r = np.clip((r - lo) / (hi - lo + 1e-12), 0, 1)
+                    #     torchvision.utils.save_image(torch.from_numpy(r)[None], os.path.join(out_dir, f"ratio_{iteration:06d}.png"))
+                    # else:
+                    #     f = fracs_img.numpy()
+                    #     f = f / (f.sum(axis=0, keepdims=True) + 1e-8)
+                    #     rgb = np.moveaxis(f, 0, -1)  # (H,W,3)
+                    #     torchvision.utils.save_image(torch.from_numpy(rgb).permute(2,0,1), os.path.join(out_dir, f"fracs_rgb_{iteration:06d}.png"))
+
+                    # bc = render_mu(viewpoint_cam, gaussians, pipe)
+                    # bcoeffs_img = bc["bcoeffs"].detach().cpu()  
+                    # out_dir = os.path.join(scene.model_path, "analysis", "bcoeffs")
+                    # os.makedirs(out_dir, exist_ok=True)
+
+                    # if bcoeffs_img.shape[0] == 2:
+                    #     f_pe, f_comp = bcoeffs_img[0], bcoeffs_img[1]
+                    #     ratio = (f_pe + 1e-8) / (f_comp + 1e-8)
+                    #     torchvision.utils.save_image(f_pe[None],   os.path.join(out_dir, f"f_pe_{iteration:06d}.png"))
+                    #     torchvision.utils.save_image(f_comp[None], os.path.join(out_dir, f"f_comp_{iteration:06d}.png"))
+                    #     r = ratio.numpy()
+                    #     lo, hi = np.percentile(r[np.isfinite(r)], [1, 99])
+                    #     r = np.clip((r - lo) / (hi - lo + 1e-12), 0, 1)
+                    #     torchvision.utils.save_image(torch.from_numpy(r)[None], os.path.join(out_dir, f"ratio_{iteration:06d}.png"))
+                    # else:
+                    #     f = bcoeffs_img.numpy()
+                    #     f = f / (f.sum(axis=0, keepdims=True) + 1e-8)
+                    #     rgb = np.moveaxis(f, 0, -1)  # (H,W,3)
+                    #     torchvision.utils.save_image(torch.from_numpy(rgb).permute(2,0,1), os.path.join(out_dir, f"fracs_rgb_{iteration:06d}.png"))
 
 
             loss_l1 = l1_loss(image, gt_image)
@@ -310,12 +414,22 @@ def training(
 
             losses_per_energy.append(loss)
 
+        # energy_loss_weights = get_energy_weights()
+        # floor = 0.3 / max(1, len(losses_per_energy))     # >= 0.15 each for 2 views
+        # energy_loss_weights = floor + (1.0 - floor * len(losses_per_energy)) * energy_loss_weights
+        # data_loss = (energy_loss_weights[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
+        # total_loss = data_loss
+
         total_loss = (energy_logits[:len(losses_per_energy)] * torch.stack(losses_per_energy)).sum()
         total_loss += bcoeff_loss
 
         p = gaussians.get_fracs.clamp_min(1e-6)
         entropy = -(p * p.log()).sum(dim=1).mean()
         total_loss += 1e-3 * entropy
+
+        if n_bcoeffs == 3:
+            alpha = bfunc_Kedge.log_alpha.exp()
+            total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
 
         total_loss.backward()
        
@@ -328,14 +442,18 @@ def training(
             f = gaussians.get_fracs 
             f0 = f[:, 0]
             f1 = f[:, 1]
-            print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            # print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            f2 = f[:, 2]
+            print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
+            # energy_weights = get_energy_weights()
+            # print(energy_weights[0], energy_weights[1])
             # print("cos(f0, f1):",
             #     torch.nn.functional.cosine_similarity(f0, f1, dim=0).item())
-            g0 = gaussians._fracs[0].grad.view(-1)
-            g1 = gaussians._fracs[1].grad.view(-1)
-            print("mean g0, g1:", g0.mean().item(), g1.mean().item())
-            print("cos(g0, -g1):",
-                torch.nn.functional.cosine_similarity(g0, -g1, dim=0).item())
+            # g0 = gaussians._fracs[0].grad.view(-1)
+            # g1 = gaussians._fracs[1].grad.view(-1)
+            # print("mean g0, g1:", g0.mean().item(), g1.mean().item())
+            # print("cos(g0, -g1):",
+            #     torch.nn.functional.cosine_similarity(g0, -g1, dim=0).item())
             print("RHOS MEAN: ", gaussians.get_rhos.mean().item())
             print("NUM GAUSSIANS: ", len(gaussians.get_xyz))
             print("-------------------")
@@ -406,43 +524,38 @@ def training(
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 if not gaussians.rhos_are_frozen():
                     gaussians.reset_bcoeffs()
-                    # t = iteration / float(opt.iterations)
-                    # # prior_mix = max(0.0, 0.6 * (1.0 - t))
-                    # prior_mix = 0.0 if iteration >= 1000 else 0.6 * (1.0 - t)
-                    # gaussians.reset_bcoeffs(
-                    #     reset_rho=None,     # let it pick q-clip
-                    #     min_frac=1e-3,
-                    #     use_prior=True,
-                    #     prior_mix=prior_mix,
-                    #     q_clip=0.98,
-                    # )
+                # t = iteration / float(opt.iterations)
+                # # prior_mix = max(0.0, 0.6 * (1.0 - t))
+                # prior_mix = 0.0 if iteration >= 1000 else 0.6 * (1.0 - t)
+                # gaussians.reset_bcoeffs(
+                #     reset_rho=None,     # let it pick q-clip
+                #     min_frac=1e-3,
+                #     use_prior=True,
+                #     prior_mix=prior_mix,
+                #     q_clip=0.98,
+                # )
 
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-                # TEMP: removed segmentation
-                # cls_optimizer.step()
-                # cls_optimizer.zero_grad()
                 gaussians.update_learning_rate(iteration)
+                if basis_opt:
+                    basis_opt.step()
+                    basis_opt.zero_grad(set_to_none=True)
                 # energy_opt.step()
                 # energy_opt.zero_grad(set_to_none=True)
-                # if basis_opt:
-                #     basis_opt.step()
-                #     basis_opt.zero_grad(set_to_none=True)
-
-            # if n_spectra > 0:
-            #     if iteration > 1000 and not combine_spectra:
-            #         spectral_ids.insert(0, 0)
-            #         combine_spectra = True
-            #         gaussians.average_params_full_spectra()
-            #         gaussians.activate_spectra(spectral_id)
-            #         spectral_ids = [0]
-            #         spectral_id = 0
-
-           
             
             torch.cuda.empty_cache()
+
+    if n_bcoeffs == 3:
+        torch.save(
+            {
+                "state_dict": bfunc_Kedge.state_dict(),
+                "E_grid"    : E_grid.cpu(),
+            },
+            os.path.join(scene.model_path, f"kedge_{iteration:06d}.pt")
+        )
 
    
 def prepare_output_and_logger(args):    

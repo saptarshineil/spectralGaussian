@@ -191,18 +191,11 @@ class GaussianModel:
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
         return torch.softmax(raw, dim=1)
-        # return stable_simplex(
-        #     raw,
-        #     tau=1.0,
-        #     eps=0.10,              # 60% min-uniform mix early; tune 0.2–0.6 if desired
-        #     s_ref_binary=10.0,     # prevents zero-grad trap for C==2
-        # )
     # def get_fracs(self):
     #     raw = torch.cat(self._fracs, dim=1)
-    #     probs = torch.softmax(raw, dim=1)
-    #     eps = 0.05                       # 5% floor; tune 0.02–0.10
-    #     C = probs.shape[1]
-    #     return (1.0 - eps) * probs + eps / C
+    #     # anneal eps in update_learning_rate() (added below)
+    #     eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
+    #     return stable_simplex(raw, tau=1.0, eps=eps, clip=30.0)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -276,7 +269,8 @@ class GaussianModel:
         xyz = self._xyz.detach().cpu().numpy()
         
         # bcoeffs = []
-        # for bcoeff_id in self.bcoeff_ids:
+        # for bcoeff_id in self.bcoeff_idsp()
+                # energy_opt.zero_gra:
         #     bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
         # bcoeffs = np.concatenate(bcoeffs, axis=1)
         # rhos = []
@@ -351,9 +345,6 @@ class GaussianModel:
         fused_fracs = torch.log(fracs.clamp_min(1e-6))  # shape (N, C)
         for k in self.bcoeff_ids:
             self._fracs.append(nn.Parameter(fused_fracs[:, k:k+1].requires_grad_(True)))
-        f = self.get_fracs 
-        print("Softmax channel means:", f[:, 0].mean(), f[:, 1].mean())
-            
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
@@ -525,6 +516,10 @@ class GaussianModel:
 
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
+
+        T = 3000.0
+        t = min(1.0, iteration / T)
+        self._frac_eps = float(0.20 * (1.0 - t))
 
         # Spectral Gaussian
         # parameter_list = []

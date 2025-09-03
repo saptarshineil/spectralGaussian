@@ -27,9 +27,30 @@ from scene.NVDIFFREC.util import save_image_raw
 import matplotlib.pyplot as plt
 # from utils.spectralCT_utils import bfunc_Compton, bfunc_PE, BFuncKedge
 from utils.spectralCT_utils import (
-    BFuncKedge, get_B_E, energy_quadrature, get_scaled_spectrum, get_B_E_at_energy
+    BFuncKedge, get_B_E, energy_quadrature, get_scaled_spectrum, get_B_E_at_energy, renormalize_col_at_pivot
 )
 from utils.general_utils import interp1d
+
+
+def orthogonalize_k_to_pe_compton(B_raw: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+    if B_raw.shape[1] < 3:
+        return B_raw
+
+    B12 = B_raw[:, :2]         # (K, 2)
+    b3  = B_raw[:, 2:3]        # (K, 1)
+
+    # M = B12^T W B12, rhs = B12^T W b3
+    BW  = B12 * W[:, None]
+    M   = BW.T @ B12 + 1e-6 * torch.eye(2, device=B_raw.device, dtype=B_raw.dtype)
+    rhs = BW.T @ b3
+
+    # Solve M c = rhs, project out: b3_orth = b3 - B12 c
+    c   = torch.cholesky_solve(rhs, torch.linalg.cholesky(M))
+    b3o = b3 - B12 @ c
+
+    # optional: renormalize at pivot (handled by get_B_E via _col_scales_at_pivot)
+    Bout = torch.cat([B12, b3o], dim=1)
+    return Bout
 
 
 def feature_to_rgb(features):
@@ -124,29 +145,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
     #         Image.fromarray(gt_rgb_mask).save(os.path.join(gt_colormask_path, '{0:05d}'.format(idx) + ".png"))
     #         Image.fromarray(pred_obj_mask).save(os.path.join(pred_obj_path, '{0:05d}'.format(idx) + ".png"))
 
-    E = torch.tensor([50.0, 120.0], device="cuda")
+    # E = torch.tensor([50.0, 120.0], device="cuda")
+    E = torch.tensor([50.0, 80.0, 120.0], device="cuda")
     # E_keV  = torch.tensor([50.0, 80.0], device="cuda")
 
-    # if n_bcoeffs == 3:
-    #     ckpt = torch.load(os.path.join(model_path,
-    #                                 f"kedge_{iteration:06d}.pt"),
-    #                     map_location="cuda")
-    #     E_grid  = ckpt["E_grid"].cuda()
-    #     bfunc_K = BFuncKedge(E_grid).cuda()
-    #     bfunc_K.load_state_dict(ckpt["state_dict"])
-    #     bfunc_K.eval()
-
-    #     Kedge = interp1d(E_keV, E_grid, bfunc_K())
-    #     B_E = torch.stack([
-    #         bfunc_PE(E_keV),
-    #         bfunc_Compton(E_keV),
-    #         Kedge 
-    #     ], dim=1)
-    # else:
-    #     B_E = torch.stack([
-    #         bfunc_PE(E_keV),
-    #         bfunc_Compton(E_keV)
-    #     ], dim=1)
     if n_bcoeffs == 3:
         ckpt = torch.load(os.path.join(model_path, f"kedge_{iteration:06d}.pt"),
                           map_location="cuda")
@@ -155,7 +157,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         bfunc_K.load_state_dict(ckpt["state_dict"])
         bfunc_K.eval()
         # uniform mid-point rule weights from stored grid
-        dE = (E_grid[-1] - E_grid[0]) / E_grid.numel()
+        # dE = (E_grid[-1] - E_grid[0]) / E_grid.numel()
+        # w_k = torch.full_like(E_grid, dE)
+        dE = (E_grid[1] - E_grid[0]).clamp_min(1e-6)
         w_k = torch.full_like(E_grid, dE)
     else:
         # use the same quadrature as training
@@ -163,32 +167,54 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
         bfunc_K = None
 
-    # (K, C_basis): PE/Compton[/Kedge] evaluated on the grid
-    # B_E = get_B_E(E_grid, bfunc_K)  # shape (K, n_bcoeffs)
-
     I0_low  = 1136.8784583333334
+    I0_mid = 1594.836
     I0_high = 2026.8482152777776
 
     E_grid_np = E_grid.detach().cpu().numpy()
-    S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np)   # (K,)
-    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np)   # (K,)
-    S = torch.stack([S_low, S_high], dim=0)                             # (C_spectra, K)
+    w_k_np = w_k.detach().cpu().numpy()
+
+    S_low  = get_scaled_spectrum( 50, None, 0.0, I0_low,  E_grid_np, w_k_np)
+    S_mid = get_scaled_spectrum(80, "Al", 1.0, I0_mid, E_grid_np, w_k_np)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np, w_k_np)
+
+    # S = torch.stack([S_low, S_high], dim=0)                             # (C_spectra, K)
+    S = torch.stack([S_low, S_mid, S_high], dim=0)                             # (C_spectra, K)
     I0_scalar = torch.sum(S * w_k, dim=1)
 
     with torch.no_grad():
-        B_E = get_B_E(E_grid, None)             # (K, C)
-        S_avg   = 0.5 * (S[0] + S[1])                  # (K,)
-        # weights = (w_k * S_avg).clamp_min(1e-12)       # (K,)
-        # m = torch.sum(B_E * weights[:, None], dim=0)   # (C,)
-        # B_E_cond = B_E / m.clamp_min(1e-12)[None, :]   # (K, C)
+        B_E = get_B_E(E_grid, bfunc_K)
 
-        W = (w_k * S_avg).clamp_min(1e-12)                    # (K,)
-        G = (B_E * W[:, None]).T @ B_E                        # (C,C)
-        # numerical: add small diagonal
-        G = G + 1e-6 * torch.eye(G.shape[0], device=G.device)
-        L = torch.linalg.cholesky(G)                          # G = L L^T
-        B_E_cond = B_E @ torch.cholesky_inverse(L)
+        # B_E_raw = get_B_E(E_grid, bfunc_K if n_bcoeffs == 3 else None, normalize=True, E_ref=70.0)
+        # if n_bcoeffs == 3:
+        #     S_avg = 0.33 * (S[0] + S[1] + S[2])
+        #     W = (w_k * S_avg).clamp_min(1e-12)
+        #     B_E = orthogonalize_k_to_pe_compton(B_E_raw, W)
+        # else:
+        #     B_E = B_E_raw
 
+        # B_E_unnorm = get_B_E(E_grid, bfunc_K if n_bcoeffs == 3 else None, normalize=False) 
+            
+        # if n_bcoeffs == 3: 
+        #     S_sum = S.sum(dim=0) # (K,) 
+        #     W = (w_k * S_sum).clamp_min(1e-12)
+        #     B12 = B_E_unnorm[:, :2] # (K,2) 
+        #     b3 = B_E_unnorm[:, 2:3] # (K,1) 
+        #     BW = B12 * W[:, None] 
+        #     M = BW.T @ B12 + 1e-6 * torch.eye(2, device=B12.device, dtype=B12.dtype) 
+        #     rhs = BW.T @ b3 
+        #     c = torch.cholesky_solve(rhs, torch.linalg.cholesky(M)) # (2,1) # Orthogonalized columns (still UNNORMALIZED) 
+        #     B_E_ortho = torch.cat([B12, b3 - B12 @ c], dim=1) # Now normalize *all* columns at the same pivot 
+        #     # s_pe = renormalize_col_at_pivot(E_grid, B_E_ortho, 0, E_ref=70.0) 
+        #     # s_co = renormalize_col_at_pivot(E_grid, B_E_ortho, 1, E_ref=70.0) 
+        #     # s_ke = renormalize_col_at_pivot(E_grid, B_E_ortho, 2, E_ref=70.0) 
+        #     B_E, s = renormalize_col_at_pivot(E_grid, B_E_ortho, E_ref=70.0)
+        #     s_pe, s_co, s_ke = s.unbind()
+        #     # B_E = B_E_ortho 
+        # else: # 2-basis: just normalize at the pivot 
+        #     B_E = get_B_E(E_grid, None, normalize=True, E_ref=70.0)
+
+        
 
     for spectral_id in list(range(0, n_spectra)):
         gaussians.active_spectra = spectral_id

@@ -24,7 +24,7 @@ from glob import glob
 import torch
 
 import matplotlib.pyplot as plt
-from utils.spectralCT_utils import pe_compton_from_density, analytic_fraction_2, analytic_fraction_3 
+from utils.spectralCT_utils import pe_compton_from_density, pe_comp_kedge_from_density
 
 
 mode_id = {
@@ -619,9 +619,10 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # fractions = fractions / fractions.sum(axis=1, keepdims=True)
         if n_bcoeffs == 2:
             # fractions = analytic_fraction_2(rhos[:,0])
-            fractions, rho0_used, alpha_used = pe_compton_from_density(rhos[:,0])
-        # else:
-        #     fractions = analytic_fraction_3(rhos[:,0])
+            fractions, _, _ = pe_compton_from_density(rhos[:,0])
+        else:
+            # fractions = analytic_fraction_3(rhos[:,0])
+            fractions, _, _ = pe_comp_kedge_from_density(rhos[:,0])
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
         ply_path = os.path.join(path, "init_pcd.ply")

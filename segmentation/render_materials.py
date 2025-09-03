@@ -252,7 +252,7 @@ def _render_cluster_mu(view, gaussians: GaussianModel, pipe: PipelineParams,
         energy_keV = torch.tensor([energy_keV], device=device, dtype=torch.float32)
         bfuncs = get_B_E_at_energy(E_grid, None, energy_keV).squeeze(0)
         # print(bfuncs.shape)
-        mu = (bcoeff_img * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
+        mu = (bcoeff_img[0:2] * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
         return mu
     finally:
         # restore
