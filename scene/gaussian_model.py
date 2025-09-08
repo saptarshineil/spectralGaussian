@@ -188,14 +188,14 @@ class GaussianModel:
         return rho
     
     @property
-    def get_fracs(self):
-        raw = torch.cat(self._fracs, dim=1)
-        return torch.softmax(raw, dim=1)
     # def get_fracs(self):
     #     raw = torch.cat(self._fracs, dim=1)
-    #     # anneal eps in update_learning_rate() (added below)
-    #     eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
-    #     return stable_simplex(raw, tau=1.0, eps=eps, clip=30.0)
+    #     return torch.softmax(raw, dim=1)
+    def get_fracs(self):
+        raw = torch.cat(self._fracs, dim=1)
+        # anneal eps in update_learning_rate() (added below)
+        eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
+        return stable_simplex(raw, tau=1.0, eps=eps, clip=30.0)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -458,6 +458,10 @@ class GaussianModel:
                     lr_final= getattr(training_args, f"basis{j}_lr_final") * self.spatial_lr_scale,
                     max_steps=getattr(training_args, f"basis{j}_lr_max_steps"),
                 ))
+            
+        self._frac_eps_start = 0.30   # keep all 3 classes alive at start
+        self._frac_eps_end   = 0.02   # small but nonzero floor later
+        self._frac_eps_steps = training_args.frac_warmup_iters * 2
         
     # def _update_learning_rate(self, iteration, param):
     #     for param_group in self.optimizer.param_groups:
@@ -516,6 +520,9 @@ class GaussianModel:
 
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
+
+        # t = min(1.0, iteration / max(1, self._frac_eps_steps))
+        # self._frac_eps = (1.0 - t) * self._frac_eps_start + t * self._frac_eps_end
 
         T = 3000.0
         t = min(1.0, iteration / T)

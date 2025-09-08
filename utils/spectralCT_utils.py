@@ -449,6 +449,54 @@ class BFuncKedge(torch.nn.Module):
         s  = s.clamp(1e-6, 1 - 1e-6)
         self.logit_EK.data = torch.log(s) - torch.log(1 - s)
 
+# class BFuncKedge(torch.nn.Module):
+#     """
+#     Smooth, differentiable K-edge basis:
+#         Bθ(E) = [(E0/E) + α · σ(γ·(E − EK))]^{-3}
+#     where σ is the logistic sigmoid. Columns are normalised downstream
+#     at a pivot (E_ref) by get_B_E()/get_B_E_at_energy().
+#     """
+#     def __init__(self, E_grid, E_margin_keV: float = 1.0):
+#         super().__init__()
+#         E_grid = E_grid.detach().float()
+#         self.register_buffer('E_grid',   E_grid)
+#         self.register_buffer('E_min',    torch.tensor(float(E_grid.min())))
+#         self.register_buffer('E_max',    torch.tensor(float(E_grid.max())))
+#         self.register_buffer('E_span',   self.E_max - self.E_min)
+#         self.register_buffer('E_margin', torch.tensor(E_margin_keV))
+#         self.register_buffer('E0',       E_grid.max().detach())
+
+#         # Unconstrained params -> constrained in forward
+#         self.logit_EK  = torch.nn.Parameter(torch.zeros(()))
+#         self.log_alpha = torch.nn.Parameter(torch.log(torch.tensor(0.1)))
+#         self.log_gamma = torch.nn.Parameter(torch.log(torch.tensor(0.5)))
+
+#     def EK(self):
+#         s = torch.sigmoid(self.logit_EK)
+#         return self.E_min + self.E_margin + s * (self.E_span - 2.0 * self.E_margin)
+
+#     def forward(self):
+#         E     = self.E_grid
+#         EK    = self.EK()
+#         alpha = self.log_alpha.exp()
+#         gamma = self.log_gamma.exp()
+#         tail  = self.E0 / E
+#         step  = alpha * torch.sigmoid(gamma * (E - EK))
+#         spec  = (tail + step).pow(-3)    # strong EK influence across the curve
+#         return spec
+
+#     @torch.no_grad()
+#     def set_gamma(self, g: float):
+#         self.log_gamma.copy_(torch.log(torch.tensor(float(g), device=self.log_gamma.device)))
+
+#     @torch.no_grad()
+#     def set_EK_init(self, ek_keV: float):
+#         ek = torch.tensor(float(ek_keV), device=self.logit_EK.device)
+#         ek = ek.clamp(self.E_min + self.E_margin, self.E_max - self.E_margin)
+#         s  = (ek - (self.E_min + self.E_margin)) / (self.E_span - 2.0 * self.E_margin)
+#         s  = s.clamp(1e-6, 1 - 1e-6)
+#         self.logit_EK.data = torch.log(s) - torch.log(1 - s)
+
 
 # def renormalize_col_at_pivot(E_grid, B, j_col, E_ref=70.0, eps=1e-12):
 #     """Divide column j_col so that its value at E_ref equals 1."""

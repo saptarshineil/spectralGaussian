@@ -235,8 +235,8 @@ def training(
         for spectral_id in spectral_ids:
             
             # ---------- Spectral Beer-Lambert ----------
-            B_E = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None)
-            
+            # B_E = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None)
+
             # B_E_raw = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=True, E_ref=70.0)
             # if n_bcoeffs == 3:
             #     S_avg = 0.33 * (S[0] + S[1] + S[2])
@@ -245,50 +245,49 @@ def training(
             # else:
             #     B_E = B_E_raw
 
-            # B_E_unnorm = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=False) 
-            
-            # if n_bcoeffs == 3: 
-            #     S_sum = S.sum(dim=0) # (K,) 
-            #     W = (w_k * S_sum).clamp_min(1e-12)
-            #     B12 = B_E_unnorm[:, :2] # (K,2) 
-            #     b3 = B_E_unnorm[:, 2:3] # (K,1) 
-            #     BW = B12 * W[:, None] 
-            #     M = BW.T @ B12 + 1e-6 * torch.eye(2, device=B12.device, dtype=B12.dtype) 
-            #     rhs = BW.T @ b3 
-            #     c = torch.cholesky_solve(rhs, torch.linalg.cholesky(M)) # (2,1) # Orthogonalized columns (still UNNORMALIZED) 
-            #     B_E_ortho = torch.cat([B12, b3 - B12 @ c], dim=1) # Now normalize *all* columns at the same pivot 
-            #     # s_pe = renormalize_col_at_pivot(E_grid, B_E_ortho, 0, E_ref=70.0) 
-            #     # s_co = renormalize_col_at_pivot(E_grid, B_E_ortho, 1, E_ref=70.0) 
-            #     # s_ke = renormalize_col_at_pivot(E_grid, B_E_ortho, 2, E_ref=70.0) 
-            #     B_E, s = renormalize_col_at_pivot(E_grid, B_E_ortho, E_ref=70.0)
-            #     s_pe, s_co, s_ke = s.unbind()
-            #     # B_E = B_E_ortho 
-            # else: # 2-basis: just normalize at the pivot 
-            #     B_E = get_B_E(E_grid, None, normalize=True, E_ref=70.0)
+            B_E_unnorm = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=False) 
+            if n_bcoeffs == 3: 
+                S_sum = S.sum(dim=0) # (K,) 
+                W = (w_k * S_sum).clamp_min(1e-12)
+                B12 = B_E_unnorm[:, :2] # (K,2) 
+                b3 = B_E_unnorm[:, 2:3] # (K,1) 
+                BW = B12 * W[:, None] 
+                M = BW.T @ B12 + 1e-6 * torch.eye(2, device=B12.device, dtype=B12.dtype) 
+                rhs = BW.T @ b3 
+                c = torch.cholesky_solve(rhs, torch.linalg.cholesky(M)) # (2,1) # Orthogonalized columns (still UNNORMALIZED) 
+                B_E_ortho = torch.cat([B12, b3 - B12 @ c], dim=1) # Now normalize *all* columns at the same pivot 
+                # s_pe = renormalize_col_at_pivot(E_grid, B_E_ortho, 0, E_ref=70.0) 
+                # s_co = renormalize_col_at_pivot(E_grid, B_E_ortho, 1, E_ref=70.0) 
+                # s_ke = renormalize_col_at_pivot(E_grid, B_E_ortho, 2, E_ref=70.0) 
+                B_E, s = renormalize_col_at_pivot(E_grid, B_E_ortho, E_ref=70.0)
+                s_pe, s_co, s_ke = s.unbind()
+                # B_E = B_E_ortho 
+            else: # 2-basis: just normalize at the pivot 
+                B_E = get_B_E(E_grid, None, normalize=True, E_ref=70.0)
 
             # bfuncs = get_B_E_at_energy(E, None, E[spectral_id])
-            bfuncs = get_B_E_at_energy(
-                E_grid,
-                bfunc_Kedge if n_bcoeffs == 3 else None,
-                E[spectral_id]
-            )
+            # bfuncs = get_B_E_at_energy(
+            #     E_grid,
+            #     bfunc_Kedge if n_bcoeffs == 3 else None,
+            #     E[spectral_id]
+            # )
 
-            # if n_bcoeffs == 3:
-            #     B1 = torch.stack([
-            #         bfunc_PE(E[spectral_id]),
-            #         bfunc_Compton(E[spectral_id]),
-            #         interp1d(E_grid, bfunc_Kedge(), E[spectral_id])
-            #     ], dim=0)                                          # (3,)
+            if n_bcoeffs == 3:
+                B1 = torch.stack([
+                    bfunc_PE(E[spectral_id]),
+                    bfunc_Compton(E[spectral_id]),
+                    interp1d(E_grid, bfunc_Kedge(), E[spectral_id])
+                ], dim=0)                                          # (3,)
 
-            #     # project K column like we did for B_E:
-            #     B12_E = B1[:2]                                     # (2,)
-            #     b3_E  = B1[2:3]                                    # (1,)
-            #     b3o_E = b3_E - (B12_E @ c).view(1)                 # (1,)
+                # project K column like we did for B_E:
+                B12_E = B1[:2]                                     # (2,)
+                b3_E  = B1[2:3]                                    # (1,)
+                b3o_E = b3_E - (B12_E @ c).view(1)                 # (1,)
 
-            #     # normalize by the same pivot scales we captured above
-            #     bfuncs = torch.stack([B1[0]/s_pe, B1[1]/s_co, b3o_E.squeeze()/s_ke], dim=0)
-            # else:
-            #     bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id])
+                # normalize by the same pivot scales we captured above
+                bfuncs = torch.stack([B1[0]/s_pe, B1[1]/s_co, b3o_E.squeeze()/s_ke], dim=0)
+            else:
+                bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id])
             
             # image = (bcoeff_image * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
 
