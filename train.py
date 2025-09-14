@@ -224,11 +224,19 @@ def training(
             render_pkg["radii"], 
         )
 
-        tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
-        tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
+        render_pkg = render_fracs(viewpoint_cam, gaussians, pipe)
+        fracs_image, _, _, _ = (
+            render_pkg["fracs"], 
+            render_pkg["viewspace_points"], 
+            render_pkg["visibility_filter"], 
+            render_pkg["radii"], 
+        )
+
+        tv_pe   = joint_tv(fracs_image[0:1], reduction='mean')
+        tv_co   = joint_tv(fracs_image[1:2], reduction='mean')
         bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
         if n_bcoeffs == 3:
-            tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
+            tv_K = joint_tv(fracs_image[2:3], reduction='mean')
             bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
 
         # Compute loss per spectral channel

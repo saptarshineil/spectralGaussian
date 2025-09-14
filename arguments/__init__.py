@@ -120,16 +120,16 @@ class OptimizationParams(ParamGroup):
         # -- Spectral --> LR --
         self.feature_lr = 0.0025
         self.percent_dense = 0.01
-        # self.opacity_reset_interval = 3000
-        self.opacity_reset_interval = 60000
+        self.opacity_reset_interval = 3000
+        # self.opacity_reset_interval = 60000
         # self.lambda_dssim = 0.005                 # spectral
         self.lambda_dssim = 0.25              # R2
         # self.lambda_dssim = 0.80              # Test
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
-        # self.densify_from_iter = 500           # spectral + R2
-        self.densify_from_iter = 50000           # spectral + R2
+        self.densify_from_iter = 500           # spectral + R2
+        # self.densify_from_iter = 50000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
         # self.densify_grad_threshold = 0.00050   # R2
         # self.densify_grad_threshold = 0.00015
@@ -184,6 +184,8 @@ class OptimizationParams(ParamGroup):
         # Density
         self.opacity_lr_init = 0.0001
         self.opacity_lr_final = 0.00001
+        # self.opacity_lr_init = 5e-5
+        # self.opacity_lr_final = 5e-6
         # self.opacity_lr_init = 0.0005
         # self.opacity_lr_final = 0.00005
         self.opacity_lr_max_steps = 30_000
@@ -206,7 +208,9 @@ class OptimizationParams(ParamGroup):
         # self.basis2_lr_final = 0.0005
         self.basis2_lr_max_steps = 30000
 
-        self.frac_warmup_iters = 1000
+        self.frac_warmup_iters = 1
+        # self.frac_warmup_iters = 1000
+        # self.frac_warmup_iters = 4000
         self.energy_warmup_iters  = 6000
         self.energy_lr_after_warmup = 1e-4
 
