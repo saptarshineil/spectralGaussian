@@ -22,7 +22,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
+from utils.image_utils import psnr, apply_colormap_viridis_train, window_from_tensor
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import wandb
@@ -215,9 +215,18 @@ def training(
             I_pred = torch.clamp(I_pred, min=1e-6 * I0_scalar[spectral_id])
             image = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
 
+
             # ---------- Loss ----------
             # L1 Loss
             gt_image = viewpoint_cam.spectral_images[spectral_id].cuda()
+            
+            lo, hi = window_from_tensor(gt_image, q_lo=0.01, q_hi=0.99)
+
+            # image = apply_colormap_viridis_train(image, vmin=lo, vmax=hi, share_window_across_batch=True)
+            # gt_image    = apply_colormap_viridis_train(gt_image, vmin=lo, vmax=hi, share_window_across_batch=True)
+
+            image  = apply_colormap_viridis_train(image)
+            gt_image = apply_colormap_viridis_train(gt_image)
 
             # if (iteration - 1) % 500 == 0:
             #     print(spectral_id, ":")
