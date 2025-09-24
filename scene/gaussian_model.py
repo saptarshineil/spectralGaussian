@@ -170,32 +170,23 @@ class GaussianModel:
     
     @property
     def get_bcoeffs(self):
-        # rho = torch.column_stack([
-        #     self.bcoeffs_activation(self._bcoeffs[b])
-        #     for b in range(len(self._bcoeffs))
-        # ])
         rho = self.get_rhos
         frac = self.get_fracs
         return rho * frac
     
     @property
     def get_rhos(self):
-        # rho = torch.column_stack([
-        #     self.rhos_activation(self._rhos[r])
-        #     for r in range(len(self._rhos))
-        # ])
         rho = self.rhos_activation(self._rhos)
         return rho
     
     @property
-    # def get_fracs(self):
-    #     raw = torch.cat(self._fracs, dim=1)
-    #     return torch.softmax(raw, dim=1)
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
-        # anneal eps in update_learning_rate() (added below)
-        eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
-        return stable_simplex(raw, eps=eps)
+        return torch.softmax(raw, dim=1)
+    # def get_fracs(self):
+    #     raw = torch.cat(self._fracs, dim=1)
+    #     eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
+    #     return stable_simplex(raw, eps=eps)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -459,50 +450,42 @@ class GaussianModel:
                     max_steps=getattr(training_args, f"basis{j}_lr_max_steps"),
                 ))
             
-        # def _make_frac_hook(self_ref):
-        #     def hook(g):
-        #         rho = self_ref.get_rhos.detach().clamp_min(1e-3)  # (N,1)
-        #         return g / rho
-        #     return hook
-        # for j in self.bcoeff_ids:
-        #     self._fracs[j].register_hook(_make_frac_hook(self))
-            
-    # def _update_learning_rate(self, iteration, param):
-    #     for param_group in self.optimizer.param_groups:
-    #         if param_group["name"] == param:
-    #             try:
-    #                 if param.endswith(str(self.active_spectra)):
-    #                     spectral_id = int(param[-1])
-    #                     param_new = param[:-2]
-    #                     lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
-    #                 else:    
-    #                     lr = getattr(self, f"{param}_scheduler_args")(iteration)
-    #                 param_group['lr'] = lr
-    #                 return lr
-    #             except AttributeError:
-    #                 pass
-    #         if param_group["lr"] == 0.0:           # frozen
-    #             return 0.0
-
     def _update_learning_rate(self, iteration, param):
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == param:
-                if param == "rhos" and getattr(self, "_rho_frozen", False):
-                    param_group["lr"] = 0.0
-                    return 0.0
                 try:
                     if param.endswith(str(self.active_spectra)):
                         spectral_id = int(param[-1])
                         param_new = param[:-2]
                         lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
-                    else:
+                    else:    
                         lr = getattr(self, f"{param}_scheduler_args")(iteration)
-                    param_group["lr"] = lr
+                    param_group['lr'] = lr
                     return lr
                 except AttributeError:
                     pass
-            if param_group["lr"] == 0.0:
+            if param_group["lr"] == 0.0:           # frozen
                 return 0.0
+
+    # def _update_learning_rate(self, iteration, param):
+    #     for param_group in self.optimizer.param_groups:
+    #         if param_group["name"] == param:
+    #             if param == "rhos" and getattr(self, "_rho_frozen", False):
+    #                 param_group["lr"] = 0.0
+    #                 return 0.0
+    #             try:
+    #                 if param.endswith(str(self.active_spectra)):
+    #                     spectral_id = int(param[-1])
+    #                     param_new = param[:-2]
+    #                     lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
+    #                 else:
+    #                     lr = getattr(self, f"{param}_scheduler_args")(iteration)
+    #                 param_group["lr"] = lr
+    #                 return lr
+    #             except AttributeError:
+    #                 pass
+    #         if param_group["lr"] == 0.0:
+    #             return 0.0
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
@@ -525,9 +508,17 @@ class GaussianModel:
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
 
-        T = 500.0
+        # T = 500.0
+        # t = min(1.0, iteration / T)
+        # self._frac_eps = float(0.10 * (1.0 - t))
+
+        T = 4000.0
         t = min(1.0, iteration / T)
-        self._frac_eps = float(0.10 * (1.0 - t))
+        self._frac_eps = float(0.30 * (1.0 - t)) 
+
+        # T = 3000.0
+        # t = min(1.0, iteration / T)
+        # self._frac_eps = float(0.20 * (1.0 - t))
 
         # Spectral Gaussian
         # parameter_list = []
@@ -543,29 +534,14 @@ class GaussianModel:
             rho    = self.rhos_activation(self._rhos)
             rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
             new_raw = self.rhos_inverse_activation(rho_cl)
-
             name = f"rhos"
             self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
-            # for k in range(len(self._rhos)):
-            #     raw    = self._rhos[k]
-            #     rho    = self.rhos_activation(raw)
-            #     rho_cl = torch.min(rho, torch.full_like(rho,
-            #                                             reset_rho))
-            #     new_raw = self.rhos_inverse_activation(rho_cl)
-
-            #     name = f"rhos_{k}"
-            #     self._rhos[k] = self.replace_tensor_to_optimizer(new_raw, name)[name]
 
             raw_logits = torch.cat(self._fracs, dim=1)
-            # probs      = torch.softmax(raw_logits, dim=1)
-            # probs      = probs.clamp_min(min_frac)
-            # probs      = probs / probs.sum(dim=1, keepdim=True)
-            # new_logits = torch.log(probs)                              # inverse-softmax
-
-            p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.0, clip=20.0)
-            p = p.clamp_min(min_frac)
-            p = p / p.sum(dim=1, keepdim=True)
-            new_logits = torch.log(p)  
+            probs      = torch.softmax(raw_logits, dim=1)
+            probs      = probs.clamp_min(min_frac)
+            probs      = probs / probs.sum(dim=1, keepdim=True)
+            new_logits = torch.log(probs)
 
             for k in range(len(self._fracs)):
                 name   = f"fracs_{k}"
@@ -573,6 +549,27 @@ class GaussianModel:
                 self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
 
             self.decay_optimizer_moments(decay=0.5)
+
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+    #     with torch.no_grad():
+    #         rho    = self.rhos_activation(self._rhos)
+    #         rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
+    #         new_raw = self.rhos_inverse_activation(rho_cl)
+    #         name = f"rhos"
+    #         self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
+
+    #         raw_logits = torch.cat(self._fracs, dim=1)
+    #         p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.02, clip=20.0)
+    #         p = p.clamp_min(max(1e-6, min_frac))
+    #         p = p / p.sum(dim=1, keepdim=True)
+    #         new_logits = torch.log(p)  
+
+    #         for k in range(len(self._fracs)):
+    #             name   = f"fracs_{k}"
+    #             tensor = new_logits[:, k:k+1]
+    #             self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+    #         self.decay_optimizer_moments(decay=0.5)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -965,6 +962,7 @@ class GaussianModel:
         prune_mask = torch.zeros(n0 + M * N, dtype=torch.bool, device="cuda")
         prune_mask[:n0] = selected
         self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
+
 
     def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos):
         """

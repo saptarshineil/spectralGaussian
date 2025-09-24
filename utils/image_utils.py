@@ -66,3 +66,52 @@ def erode(img_in, erode_size=4):
     img_out = cv2.erode(img_out, kernel, iterations=1)
 
     return img_out
+
+def apply_colormap_viridis_train(x: torch.Tensor) -> torch.Tensor:
+    """
+    Differentiable, LUT-free, piece-wise linear approximation of viridis.
+    Assumes x in [0,1]. Accepts (H,W), (1,H,W), (B,1,H,W).
+    Returns (B,3,H,W).
+    """
+    x = x.float()
+    if x.ndim == 2:        # (H,W)
+        x = x.unsqueeze(0).unsqueeze(0)
+    elif x.ndim == 3:      # (C,H,W) or (1,H,W)
+        if x.shape[0] == 3:
+            return x.unsqueeze(0)        # already RGB -> (1,3,H,W)
+        x = x.unsqueeze(0)               # -> (1,1,H,W)
+    elif x.ndim == 4:      # (B,C,H,W)
+        if x.shape[1] == 3:
+            return x                     # already RGB
+        assert x.shape[1] == 1, "Expected grayscale (B,1,H,W) or RGB (B,3,H,W)."
+    else:
+        raise ValueError(f"Unsupported tensor shape {tuple(x.shape)}")
+
+    B, _, H, W = x.shape
+    t = x.clamp(0.0, 1.0).squeeze(1)            # (B,H,W)
+
+    # Viridis anchors (approx) at t = [0.0, 0.25, 0.50, 0.75, 0.90, 1.0]
+    # Values are from matplotlib viridis samples, rounded a bit for compactness.
+    pos = torch.tensor([0.00, 0.25, 0.50, 0.75, 0.90, 1.00], device=t.device, dtype=t.dtype)  # (K,)
+    cols = torch.tensor([
+        [0.267, 0.005, 0.329],  # t=0.00
+        [0.283, 0.141, 0.458],  # t=0.25
+        [0.254, 0.265, 0.530],  # t=0.50
+        [0.207, 0.372, 0.553],  # t=0.75
+        [0.275, 0.633, 0.437],  # t=0.90
+        [0.993, 0.906, 0.144],  # t=1.00
+    ], device=t.device, dtype=t.dtype)  # (K,3)
+
+    # Find segment for each pixel: pos[i] <= t < pos[i+1]
+    idx = torch.bucketize(t, pos) - 1
+    idx = idx.clamp(0, pos.numel() - 2)          # (B,H,W)
+
+    p0 = pos[idx]                                 # (B,H,W)
+    p1 = pos[idx + 1]
+    w  = (t - p0) / (p1 - p0 + 1e-8)              # (B,H,W)
+
+    c0 = cols[idx]                                # (B,H,W,3)
+    c1 = cols[idx + 1]
+    rgb = (1 - w.unsqueeze(-1)) * c0 + w.unsqueeze(-1) * c1
+    rgb = rgb.permute(0, 3, 1, 2).contiguous()    # (B,3,H,W)
+    return rgb

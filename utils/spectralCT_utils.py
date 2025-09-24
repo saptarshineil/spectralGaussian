@@ -72,7 +72,8 @@ def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_e
 # ------------------------ Photoelectric + Compton basis functions ------------------------
 def bfunc_PE(E_keV: torch.Tensor) -> torch.Tensor:
     E_keV = torch.as_tensor(E_keV, dtype=torch.float32, device=E_keV.device)
-    return torch.pow(E_keV, -3.0)       
+    # return torch.pow(E_keV, -3.5)       
+    return torch.pow(E_keV, -3.0)
 
 def bfunc_Compton(E_keV: torch.Tensor,
                   eps: float = EPSILON) -> torch.Tensor:
@@ -139,14 +140,34 @@ def get_B_E_at_energy(E_grid, bfunc_Kedge, E, *, normalize=True, E_ref: float = 
     return B1
 
 
-# ------------------------ Discretized energy grid ------------------------
-# def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
-#     e0 = torch.tensor(E_min, device=device, dtype=dtype)
-#     e1 = torch.tensor(E_max, device=device, dtype=dtype)
-#     edges = torch.logspace(torch.log10(e0), torch.log10(e1), steps=N+1, device=device, dtype=dtype)
-#     E_k = 0.5*(edges[:-1] + edges[1:])
-#     w_k = (edges[1:] - edges[:-1])
-#     return E_k, w_k
+# ------------------------------------------------------------------------------------------------
+def get_spectral_constants(E_grid=None, w_k=None):
+    # E = torch.tensor([50.0, 70.0], dtype=torch.float32).cuda()
+    # E = torch.tensor([50.0, 120.0], device='cuda', dtype=torch.float32)
+    E = torch.tensor([50.0, 80.0, 120.0], device='cuda', dtype=torch.float32)
+    # E = torch.tensor([50.0, 80.0], device='cuda', dtype=torch.float32)
+
+    I0_low = 1136.8784583333334
+    I0_mid = 1594.836
+    I0_high = 2026.8482152777776
+
+    if E_grid is None and w_k is None:
+        N_samples = 64
+        # If dataset is EID (no bins) --> sample full spectrum
+        E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
+    E_grid_np = E_grid.cpu().numpy()
+    w_k_np = w_k.cpu().numpy()
+
+    S_low  = get_scaled_spectrum(50, None, 0.0, I0_low, E_grid_np, w_k_np)
+    S_mid  = get_scaled_spectrum(80, "Al", 1.0, I0_mid, E_grid_np, w_k_np)
+    S_high = get_scaled_spectrum(120, "Cu", 0.5, I0_high, E_grid_np, w_k_np)
+
+    # S         = torch.stack([S_low, S_high])      # (C=2, K)
+    S         = torch.stack([S_low, S_mid, S_high])      # (C=2, K)
+    W = (w_k * S.sum(dim=0)).clamp_min(1e-12)
+    I0_scalar = torch.sum(S * w_k, dim=1)
+
+    return E, E_grid, w_k, S, W, I0_scalar
 
 def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
     dE   = (E_max - E_min) / N                       # scalar
@@ -159,6 +180,14 @@ def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
     w_k  = torch.full((N,), dE, device=device, dtype=dtype)  # (K,)
     return E_k, w_k
 
+# def energy_quadrature(E_min, E_max, N, *, device="cuda", dtype=torch.float32):
+#     e0 = torch.tensor(E_min, device=device, dtype=dtype)
+#     e1 = torch.tensor(E_max, device=device, dtype=dtype)
+#     edges = torch.logspace(torch.log10(e0), torch.log10(e1), steps=N+1, device=device, dtype=dtype)
+#     E_k = 0.5*(edges[:-1] + edges[1:])
+#     w_k = (edges[1:] - edges[:-1])
+#     return E_k, w_k
+
 def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np, w_k_np):
     spek = spekpy.Spek(kvp=kvp, th=12)
     if filt_mat is not None:
@@ -169,6 +198,111 @@ def get_scaled_spectrum(kvp, filt_mat, filt_thick, I0, E_grid_np, w_k_np):
     return torch.tensor(S*I0, device='cuda', dtype=torch.float32)
 
 
+# def render_image(bcoeff_image, bfunc_Kedge, E, E_grid, w_k, S, W, I0_scalar, n_bcoeffs, spectral_id, log_tilt):
+# def render_image(bcoeff_image, bfunc_Kedge, E, E_grid, w_k, S, W, I0_scalar, n_bcoeffs, spectral_id, scatter_frac):
+def render_image(bcoeff_image, bfunc_Kedge, E, E_grid, w_k, S, W, I0_scalar, n_bcoeffs, spectral_id):
+    # B_E_unnorm = get_B_E(E_grid, bfunc_Kedge if n_bcoeffs == 3 else None, normalize=False) 
+    # if n_bcoeffs == 3: 
+    #     S_sum = S.sum(dim=0) # (K,) 
+    #     W = (w_k * S_sum).clamp_min(1e-12)
+    #     B12 = B_E_unnorm[:, :2] # (K,2) 
+    #     b3 = B_E_unnorm[:, 2:3] # (K,1) 
+    #     BW = B12 * W[:, None] 
+    #     M = BW.T @ B12 + 1e-6 * torch.eye(2, device=B12.device, dtype=B12.dtype) 
+    #     rhs = BW.T @ b3 
+    #     c = torch.cholesky_solve(rhs, torch.linalg.cholesky(M)) # (2,1) # Orthogonalized columns (still UNNORMALIZED) 
+    #     B_E_ortho = torch.cat([B12, b3 - B12 @ c], dim=1) # Now normalize *all* columns at the same pivot 
+    #     # s_pe = renormalize_col_at_pivot(E_grid, B_E_ortho, 0, E_ref=70.0) 
+    #     # s_co = renormalize_col_at_pivot(E_grid, B_E_ortho, 1, E_ref=70.0) 
+    #     # s_ke = renormalize_col_at_pivot(E_grid, B_E_ortho, 2, E_ref=70.0) 
+    #     B_E, s = renormalize_col_at_pivot(E_grid, B_E_ortho, E_ref=70.0)
+    #     s_pe, s_co, s_ke = s.unbind()
+    #     # B_E = B_E_ortho 
+    # else: # 2-basis: just normalize at the pivot 
+    #     B_E = get_B_E(E_grid, None, normalize=True, E_ref=70.0)
+
+    # if n_bcoeffs == 3:
+    #     B1 = torch.stack([
+    #         bfunc_PE(E[spectral_id]),
+    #         bfunc_Compton(E[spectral_id]),
+    #         interp1d(E_grid, bfunc_Kedge(), E[spectral_id])
+    #     ], dim=0)                                          # (3,)
+
+    #     # project K column like we did for B_E:
+    #     B12_E = B1[:2]                                     # (2,)
+    #     b3_E  = B1[2:3]                                    # (1,)
+    #     b3o_E = b3_E - (B12_E @ c).view(1)                 # (1,)
+
+    #     # normalize by the same pivot scales we captured above
+    #     bfuncs = torch.stack([B1[0]/s_pe, B1[1]/s_co, b3o_E.squeeze()/s_ke], dim=0)
+    # else:
+    #     bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id])
+
+    if n_bcoeffs == 3:
+        B_raw = get_B_E(E_grid, bfunc_Kedge, normalize=False)
+        B_raw = orthogonalize_k_to_pe_compton(B_raw, W)
+        B_E, _ = renormalize_col_at_pivot(E_grid, B_raw, E_ref=70.0)
+        bfuncs = get_B_E_at_energy(E_grid, bfunc_Kedge, E[spectral_id], normalize=True)
+    else:
+        B_E = get_B_E(E_grid, None, normalize=True)
+        bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id], normalize=True)
+
+    μ_E = (bcoeff_image.unsqueeze(0) * B_E[..., None, None]).sum(1)
+
+    I_pred = torch.sum(S[spectral_id,:,None,None] *
+                    torch.exp(-μ_E) * w_k[:,None,None],
+                    dim=0)
+    # I_pred = torch.sum(S[spectral_id,:,None,None].double() * torch.exp(-μ_E) * w_k[:,None,None].double(), dim=0).float()
+
+    # E0 = 70.0
+    # tilt = torch.exp(log_tilt[spectral_id]).double()         # ≈ 1 initially
+    # tilt_vec = torch.exp( (E_grid.double()-E0) * (tilt-1.0) / 120.0 )
+    # I_pred = torch.sum((S[spectral_id]*tilt_vec).unsqueeze(-1).unsqueeze(-1) *
+    #                    torch.exp(-μ_E) * w_k[:,None,None].double(), dim=0).float()
+
+    # I_pred = torch.sum(S[spectral_id,:,None,None].double() * torch.exp(-μ_E) * w_k[:,None,None], dim=0)
+    # I_pred = I_pred + torch.nn.functional.softplus(scatter_frac[spectral_id]) * I0_scalar[spectral_id]
+
+    I_pred = torch.clamp_min(I_pred, 1e-6 * I0_scalar[spectral_id])
+    image = -torch.log(I_pred / I0_scalar[spectral_id]).unsqueeze(0)
+    # image = (bcoeff_image * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
+    return image, bfuncs
+
+def orthogonalize_k_to_pe_compton(B_raw: torch.Tensor, W: torch.Tensor) -> torch.Tensor:
+    if B_raw.shape[1] < 3:
+        return B_raw
+
+    B12 = B_raw[:, :2]         # (K, 2)
+    b3  = B_raw[:, 2:3]        # (K, 1)
+
+    # M = B12^T W B12, rhs = B12^T W b3
+    BW  = B12 * W[:, None]
+    M   = BW.T @ B12 + 1e-6 * torch.eye(2, device=B_raw.device, dtype=B_raw.dtype)
+    rhs = BW.T @ b3
+
+    # Solve M c = rhs, project out: b3_orth = b3 - B12 c
+    c   = torch.cholesky_solve(rhs, torch.linalg.cholesky(M))
+    b3o = b3 - B12 @ c
+
+    # optional: renormalize at pivot (handled by get_B_E via _col_scales_at_pivot)
+    Bout = torch.cat([B12, b3o], dim=1)
+    return Bout
+
+def renormalize_col_at_pivot(E_grid, B, E_ref=70.0, eps=1e-12):
+    eref = torch.as_tensor(E_ref, device=B.device, dtype=B.dtype)
+    scales = []
+    cols = []
+    for j in range(B.shape[1]):
+        col  = B[:, j]
+        val  = interp1d(E_grid, col, eref).clamp_min(eps)  # depends on col
+        cols.append(col / val)                             # out-of-place
+        scales.append(val)
+    B_out = torch.stack(cols, dim=1)
+    s = torch.stack(scales)                                # (C,)
+    return B_out, s
+
+
+# ------------------------ Softmax ------------------------
 def stable_simplex(
     logits: torch.Tensor,
     tau: float = 1.0,
@@ -277,15 +411,3 @@ class BFuncKedge(torch.nn.Module):
 #     B[:, j_col] = B[:, j_col] / val
 #     return val
 
-def renormalize_col_at_pivot(E_grid, B, E_ref=70.0, eps=1e-12):
-    eref = torch.as_tensor(E_ref, device=B.device, dtype=B.dtype)
-    scales = []
-    cols = []
-    for j in range(B.shape[1]):
-        col  = B[:, j]
-        val  = interp1d(E_grid, col, eref).clamp_min(eps)  # depends on col
-        cols.append(col / val)                             # out-of-place
-        scales.append(val)
-    B_out = torch.stack(cols, dim=1)
-    s = torch.stack(scales)                                # (C,)
-    return B_out, s

@@ -167,7 +167,8 @@ def render_r2(
         "radii": radii,
     }
 
-def render_mu(
+
+def render_bcoeffs(
     viewpoint_camera,
     pc : GaussianModel, 
     pipe, 
@@ -251,22 +252,6 @@ def render_mu(
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
-
-    # print(rendered_image.shape)
-
-    # img = rendered_image.detach().cpu().numpy()   # shape (2, 140, 140)
-    # plt.imshow(img[0])
-    # plt.show()
-
-    # # 2.  Plot the two channels side-by-side
-    # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
-
-    # for ch in range(2):
-    #     axes[ch].imshow(img[ch], cmap='gray', vmin=img.min(), vmax=img.max())
-    #     axes[ch].set_title(f'Channel {ch}')
-    #     axes[ch].axis('off')
-
-    # plt.show()
     
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -278,6 +263,8 @@ def render_mu(
     }
 
     return out
+
+
 
 def render_fracs(
     viewpoint_camera,
@@ -364,22 +351,6 @@ def render_fracs(
         cov3D_precomp=cov3D_precomp,
     )
 
-    # print(rendered_image.shape)
-
-    # img = rendered_image.detach().cpu().numpy()   # shape (2, 140, 140)
-    # plt.imshow(img[0])
-    # plt.show()
-
-    # # 2.  Plot the two channels side-by-side
-    # fig, axes = plt.subplots(1, 2, figsize=(6, 3), constrained_layout=True)
-
-    # for ch in range(2):
-    #     axes[ch].imshow(img[ch], cmap='gray', vmin=img.min(), vmax=img.max())
-    #     axes[ch].set_title(f'Channel {ch}')
-    #     axes[ch].axis('off')
-
-    # plt.show()
-    
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     out = {

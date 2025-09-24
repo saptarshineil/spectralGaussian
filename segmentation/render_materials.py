@@ -17,7 +17,7 @@ import sys
 sys.path.append('../')
 
 from arguments import ModelParams, PipelineParams, get_combined_args
-from gaussian_renderer import render_mu
+from gaussian_renderer import render_bcoeffs
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from utils.spectralCT_utils import get_B_E_at_energy
@@ -241,7 +241,7 @@ def _render_cluster_mu(view, gaussians: GaussianModel, pipe: PipelineParams,
         tiny_raw = torch.full_like(gaussians._rhos, -20.0)  # softplus(-20) ~ 2e-9
         gaussians._rhos[~keep_mask] = tiny_raw[~keep_mask]
 
-        pkg = render_mu(view, gaussians, pipe)  # dict with "bcoeffs": (C,H,W)
+        pkg = render_bcoeffs(view, gaussians, pipe)  # dict with "bcoeffs": (C,H,W)
         bcoeff_img: torch.Tensor = pkg["bcoeffs"]  # accumulated basis coeffs
         torch.cuda.synchronize()
 

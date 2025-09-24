@@ -16,7 +16,7 @@
 # sys.path.append('../')
 
 # from arguments import ModelParams, PipelineParams, get_combined_args
-# from gaussian_renderer import render_mu
+# from gaussian_renderer import render_bcoeffs
 # from scene import Scene, GaussianModel
 # from utils.general_utils import safe_state
 # from utils.spectralCT_utils import (
@@ -287,7 +287,7 @@
 #         tiny_raw = torch.full_like(gaussians._rhos, -20.0)  # softplus(-20) ≈ 2e-9
 #         gaussians._rhos[~keep_mask] = tiny_raw[~keep_mask]
 
-#         pkg = render_mu(view, gaussians, pipe)
+#         pkg = render_bcoeffs(view, gaussians, pipe)
 #         bcoeff_img: torch.Tensor = pkg["bcoeffs"]  # (C, H, W)
 
 #         # Build basis vector at ek, but NORMALIZE at a pivot away from the overlay energy
@@ -394,7 +394,7 @@
 
 #     for idx, view in enumerate(views):
 #         # Pre-render to get (H,W)
-#         pkg0 = render_mu(view, gaussians, pipe)
+#         pkg0 = render_bcoeffs(view, gaussians, pipe)
 #         H, W = pkg0["bcoeffs"].shape[-2:]
 
 #         mu_metal = _render_cluster_mu(view, gaussians, pipe, metal_mask, energy_keV, bfunc_Kedge, E_grid) if metal_labels else torch.zeros(1, H, W, device=dev)
@@ -548,7 +548,7 @@ import sys
 sys.path.append('../')
 
 from arguments import ModelParams, PipelineParams, get_combined_args
-from gaussian_renderer import render_mu
+from gaussian_renderer import render_bcoeffs
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from utils.spectralCT_utils import (
@@ -819,7 +819,7 @@ def _render_cluster_mu(
         tiny_raw = torch.full_like(gaussians._rhos, -20.0)  # softplus(-20) ≈ 2e-9
         gaussians._rhos[~keep_mask] = tiny_raw[~keep_mask]
 
-        pkg = render_mu(view, gaussians, pipe)
+        pkg = render_bcoeffs(view, gaussians, pipe)
         bcoeff_img: torch.Tensor = pkg["bcoeffs"]  # (C, H, W)
 
         # Build basis vector at ek, but NORMALIZE at a pivot away from the overlay energy
@@ -926,7 +926,7 @@ def render_material_views(
 
     for idx, view in enumerate(views):
         # Pre-render to get (H,W)
-        pkg0 = render_mu(view, gaussians, pipe)
+        pkg0 = render_bcoeffs(view, gaussians, pipe)
         H, W = pkg0["bcoeffs"].shape[-2:]
 
         mu_metal = _render_cluster_mu(view, gaussians, pipe, metal_mask, energy_keV, bfunc_Kedge, E_grid) if metal_labels else torch.zeros(1, H, W, device=dev)

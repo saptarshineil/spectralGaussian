@@ -122,21 +122,18 @@ class OptimizationParams(ParamGroup):
         self.percent_dense = 0.01
         self.opacity_reset_interval = 3000
         # self.opacity_reset_interval = 60000
-        # self.lambda_dssim = 0.005                 # spectral
         self.lambda_dssim = 0.25              # R2
-        # self.lambda_dssim = 0.80              # Test
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
         self.densify_from_iter = 500           # spectral + R2
         # self.densify_from_iter = 50000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
-        # self.densify_grad_threshold = 0.00050   # R2
-        # self.densify_grad_threshold = 0.00015
-        # self.densify_grad_threshold = 0.00025
         self.densify_grad_threshold = 0.0001
-        # self.densify_grad_threshold = 0.00017
-        # self.densify_grad_threshold = 0.005
+        # self.densify_grad_threshold = 0.0002
+        
+        # self.densify_grad_threshold = 0.00001
+        # self.densify_grad_threshold = 0.00005
         self.switch_iter = 1_500
 
         self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
@@ -192,20 +189,14 @@ class OptimizationParams(ParamGroup):
         # PE
         self.basis0_lr_init = 0.001
         self.basis0_lr_final = 0.0001
-        # self.basis0_lr_init = 0.005     # Lower PSNR, but better segmentation
-        # self.basis0_lr_final = 0.0005
         self.basis0_lr_max_steps = 30000
         # Compton
         self.basis1_lr_init = 0.001
         self.basis1_lr_final = 0.0001
-        # self.basis1_lr_init = 0.005     # Lower PSNR, but better segmentation
-        # self.basis1_lr_final = 0.0005
         self.basis1_lr_max_steps = 30000
         # K-edge
         self.basis2_lr_init = 0.001
         self.basis2_lr_final = 0.0001
-        # self.basis2_lr_init = 0.005     # Lower PSNR, but better segmentation
-        # self.basis2_lr_final = 0.0005
         self.basis2_lr_max_steps = 30000
 
         self.frac_warmup_iters = 1
