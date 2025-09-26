@@ -180,13 +180,16 @@ class GaussianModel:
         return rho
     
     @property
-    def get_fracs(self):
-        raw = torch.cat(self._fracs, dim=1)
-        return torch.softmax(raw, dim=1)
     # def get_fracs(self):
     #     raw = torch.cat(self._fracs, dim=1)
-    #     eps = getattr(self, "_frac_eps", 0.20)   # start with some floor
-    #     return stable_simplex(raw, eps=eps)
+    #     return torch.softmax(raw, dim=1)
+    def get_fracs(self):
+        raw = torch.cat(self._fracs, dim=1)
+        # eps = getattr(self, "_frac_eps", 0.05)
+        # return stable_simplex(raw, eps=eps, s_ref_binary=1.0)
+        eps = getattr(self, "_frac_eps", 0.80)
+        return stable_simplex(raw, eps=eps)
+        # return stable_simplex(raw, tau=1.0, eps=0.02)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -514,7 +517,7 @@ class GaussianModel:
 
         T = 4000.0
         t = min(1.0, iteration / T)
-        self._frac_eps = float(0.30 * (1.0 - t)) 
+        self._frac_eps = float(0.80 * (1.0 - t)) 
 
         # T = 3000.0
         # t = min(1.0, iteration / T)
@@ -529,28 +532,7 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
-        with torch.no_grad():
-            rho    = self.rhos_activation(self._rhos)
-            rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
-            new_raw = self.rhos_inverse_activation(rho_cl)
-            name = f"rhos"
-            self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
-
-            raw_logits = torch.cat(self._fracs, dim=1)
-            probs      = torch.softmax(raw_logits, dim=1)
-            probs      = probs.clamp_min(min_frac)
-            probs      = probs / probs.sum(dim=1, keepdim=True)
-            new_logits = torch.log(probs)
-
-            for k in range(len(self._fracs)):
-                name   = f"fracs_{k}"
-                tensor = new_logits[:, k:k+1]
-                self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
-
-            self.decay_optimizer_moments(decay=0.5)
-
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
     #     with torch.no_grad():
     #         rho    = self.rhos_activation(self._rhos)
     #         rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
@@ -559,10 +541,10 @@ class GaussianModel:
     #         self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
 
     #         raw_logits = torch.cat(self._fracs, dim=1)
-    #         p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.02, clip=20.0)
-    #         p = p.clamp_min(max(1e-6, min_frac))
-    #         p = p / p.sum(dim=1, keepdim=True)
-    #         new_logits = torch.log(p)  
+    #         probs      = torch.softmax(raw_logits, dim=1)
+    #         probs      = probs.clamp_min(min_frac)
+    #         probs      = probs / probs.sum(dim=1, keepdim=True)
+    #         new_logits = torch.log(probs)
 
     #         for k in range(len(self._fracs)):
     #             name   = f"fracs_{k}"
@@ -570,6 +552,27 @@ class GaussianModel:
     #             self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
 
     #         self.decay_optimizer_moments(decay=0.5)
+
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+        with torch.no_grad():
+            rho    = self.rhos_activation(self._rhos)
+            rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
+            new_raw = self.rhos_inverse_activation(rho_cl)
+            name = f"rhos"
+            self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
+
+            raw_logits = torch.cat(self._fracs, dim=1)
+            p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.02, clip=20.0)
+            p = p.clamp_min(max(1e-6, min_frac))
+            p = p / p.sum(dim=1, keepdim=True)
+            new_logits = torch.log(p)  
+
+            for k in range(len(self._fracs)):
+                name   = f"fracs_{k}"
+                tensor = new_logits[:, k:k+1]
+                self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+            self.decay_optimizer_moments(decay=0.5)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -598,124 +601,134 @@ class GaussianModel:
     #         raw[idx] = self.rhos_inverse_activation(rho_new_act)
     #     self._rhos = self.replace_tensor_to_optimizer(raw, "rhos")["rhos"]
 
-    # def densify_and_prune(self, 
-    #     max_grad, 
-    #     min_opacity, 
-    #     extent, 
-    #     max_screen_size,
-    #     max_scale,
-    #     max_num_gaussians,
-    #     opacity_scale_threshold,
-    #     bbox=None,
-    #     only_active_spectra=False
-    # ):
-    #     grads = self.xyz_gradient_accum / self.denom
-    #     grads[grads.isnan()] = 0.0
+    def densify_and_prune(self, 
+        max_grad, 
+        min_opacity, 
+        extent, 
+        max_screen_size,
+        max_scale,
+        max_num_gaussians,
+        opacity_scale_threshold,
+        bbox=None,
+        only_active_spectra=False
+    ):
+        grads = self.xyz_gradient_accum / self.denom
+        grads[grads.isnan()] = 0.0
 
-    #     # -- R2-Gaussian --
-    #     # Densify Gaussians if Gaussians are fewer than threshold
-    #     if opacity_scale_threshold:
-    #         if not max_num_gaussians or (
-    #             max_num_gaussians and grads.shape[0] < max_num_gaussians
-    #         ):
-    #             self.densify_and_clone(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
-    #             self.densify_and_split(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
+        # -- R2-Gaussian --
+        # Densify Gaussians if Gaussians are fewer than threshold
+        if opacity_scale_threshold:
+            if not max_num_gaussians or (
+                max_num_gaussians and grads.shape[0] < max_num_gaussians
+            ):
+                self.densify_and_clone(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
+                self.densify_and_split(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
 
-    #     # -- R2-Gaussian --
-    #     # Prune gaussians with too small density
-    #     # bcoeffs = self.get_rhos
-    #     # prune_mask = ((bcoeffs[:,0] < min_opacity) & (bcoeffs[:,1] < min_opacity))
-    #     # prune_mask = (bcoeffs < min_opacity).all(dim=1)
+        # -- R2-Gaussian --
+        # Prune gaussians with too small density
+        # bcoeffs = self.get_rhos
+        # prune_mask = ((bcoeffs[:,0] < min_opacity) & (bcoeffs[:,1] < min_opacity))
+        # prune_mask = (bcoeffs < min_opacity).all(dim=1)
         
-    #     # prune_mask = (self.get_rhos < min_opacity).squeeze()
-    #     # b = self.get_bcoeffs                                  # (N, C)
-    #     # prune_mask = (b.max(dim=1).values < min_opacity)
-    #     # bsum = self.get_bcoeffs.sum(dim=1, keepdim=True)  # (N,1)
-    #     # prune_mask = (bsum < min_opacity).squeeze()
+        # prune_mask = (self.get_rhos < min_opacity).squeeze()
+        # b = self.get_bcoeffs                                  # (N, C)
+        # prune_mask = (b.max(dim=1).values < min_opacity)
+        # bsum = self.get_bcoeffs.sum(dim=1, keepdim=True)  # (N,1)
+        # prune_mask = (bsum < min_opacity).squeeze()
 
-    #     # # eff = self.get_rhos.squeeze() * self.get_fracs.max(dim=1).values
-    #     # # prune_mask = (eff < min_opacity)
+        # # eff = self.get_rhos.squeeze() * self.get_fracs.max(dim=1).values
+        # # prune_mask = (eff < min_opacity)
 
-    #     prune_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
-    #     prune_mask |= (self.get_rhos.squeeze() < min_opacity)
+        prune_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
+        prune_mask |= (self.get_rhos.squeeze() < min_opacity)
         
-    #     # Prune gaussians outside the bbox
-    #     if bbox is not None:
-    #         xyz = self.get_xyz
-    #         prune_mask_xyz = (
-    #             (xyz[:, 0] < bbox[0, 0])
-    #             | (xyz[:, 0] > bbox[1, 0])
-    #             | (xyz[:, 1] < bbox[0, 1])
-    #             | (xyz[:, 1] > bbox[1, 1])
-    #             | (xyz[:, 2] < bbox[0, 2])
-    #             | (xyz[:, 2] > bbox[1, 2])
-    #         )
-    #         prune_mask = prune_mask | prune_mask_xyz
+        # Prune gaussians outside the bbox
+        if bbox is not None:
+            xyz = self.get_xyz
+            prune_mask_xyz = (
+                (xyz[:, 0] < bbox[0, 0])
+                | (xyz[:, 0] > bbox[1, 0])
+                | (xyz[:, 1] < bbox[0, 1])
+                | (xyz[:, 1] > bbox[1, 1])
+                | (xyz[:, 2] < bbox[0, 2])
+                | (xyz[:, 2] > bbox[1, 2])
+            )
+            prune_mask = prune_mask | prune_mask_xyz
 
-    #     if max_screen_size:
-    #         big_points_vs = self.max_radii2D > max_screen_size
-    #         prune_mask = torch.logical_or(prune_mask, big_points_vs)
-    #     if max_scale:
-    #         big_points_ws = self.get_scaling.max(dim=1).values > max_scale
-    #         prune_mask = torch.logical_or(prune_mask, big_points_ws)
-    #     self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
+        if max_screen_size:
+            big_points_vs = self.max_radii2D > max_screen_size
+            prune_mask = torch.logical_or(prune_mask, big_points_vs)
+        if max_scale:
+            big_points_ws = self.get_scaling.max(dim=1).values > max_scale
+            prune_mask = torch.logical_or(prune_mask, big_points_ws)
+        self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
 
-    #     torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
-    # def densify_and_clone(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra):
-    #     # Extract points that satisfy the gradient condition
-    #     selected_pts_mask = torch.where(
-    #         torch.norm(grads, dim=-1) >= grad_threshold, True, False
-    #     )
-    #     selected_pts_mask = torch.logical_and(
-    #         selected_pts_mask,
-    #         torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent
-    #     )
-    #     selected_pts_mask = torch.logical_and(
-    #         selected_pts_mask,
-    #         torch.max(self.get_scaling, dim=1).values <= densify_scale_threshold
-    #     )
+    def densify_and_clone(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra):
+        # Extract points that satisfy the gradient condition
+        selected_pts_mask = torch.where(
+            torch.norm(grads, dim=-1) >= grad_threshold, True, False
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values <= densify_scale_threshold
+        )
         
-    #     new_xyz = self._xyz[selected_pts_mask]
-    #     new_scaling = self._scaling[selected_pts_mask]
-    #     new_rotation = self._rotation[selected_pts_mask]
-    #     new_max_radii2D = self.max_radii2D[selected_pts_mask]
-    #     # new_rhos = self._rhos[selected_pts_mask]
+        new_xyz = self._xyz[selected_pts_mask]
+        new_scaling = self._scaling[selected_pts_mask]
+        new_rotation = self._rotation[selected_pts_mask]
+        new_max_radii2D = self.max_radii2D[selected_pts_mask]
+        # new_rhos = self._rhos[selected_pts_mask]
 
-    #     # new_rhos = self.rhos_inverse_activation(
-    #     #     self.get_rhos[selected_pts_mask] * 0.5
-    #     # )
-    #     # self._rhos[selected_pts_mask] = new_rhos
+        # new_rhos = self.rhos_inverse_activation(
+        #     self.get_rhos[selected_pts_mask] * 0.5
+        # )
+        # self._rhos[selected_pts_mask] = new_rhos
 
-    #     with torch.no_grad():
-    #         rho_sel     = self.get_rhos[selected_pts_mask]                                # (k,1) positive
-    #         rho_half    = 0.5 * rho_sel
-    #         new_rhos = self.rhos_inverse_activation(rho_half)                 # raw for child
-    #         # also write back the parent's halved ρ (raw)
-    #         self._rhos[selected_pts_mask] = new_rhos
+        with torch.no_grad():
+            rho_sel     = self.get_rhos[selected_pts_mask]                                # (k,1) positive
+            rho_half    = 0.5 * rho_sel
+            new_rhos = self.rhos_inverse_activation(rho_half)                 # raw for child
+            # also write back the parent's halved ρ (raw)
+            self._rhos[selected_pts_mask] = new_rhos
 
-    #     self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
-    #     # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
+        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
+        # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
 
-    #     # self._rhos[selected_pts_mask] = new_rhos
+        # self._rhos[selected_pts_mask] = new_rhos
         
-    #     # for bcoeff_id in self.bcoeff_ids:
-    #     #     new_bcoeffs = self._bcoeffs[bcoeff_id][selected_pts_mask]
-    #     #     self.densification_postfix_per_coeff(new_bcoeffs, bcoeff_id)
+        # for bcoeff_id in self.bcoeff_ids:
+        #     new_bcoeffs = self._bcoeffs[bcoeff_id][selected_pts_mask]
+        #     self.densification_postfix_per_coeff(new_bcoeffs, bcoeff_id)
 
-    #     # for bcoeff_id in self.bcoeff_ids:
-    #     #     # new_rhos = self._rhos[bcoeff_id][selected_pts_mask]
-    #     #     new_fracs = self._fracs[bcoeff_id][selected_pts_mask]
-    #     #     # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
-    #     #     self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
+        for bcoeff_id in self.bcoeff_ids:
+            # new_rhos = self._rhos[bcoeff_id][selected_pts_mask]
+            new_fracs = self._fracs[bcoeff_id][selected_pts_mask]
+            # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
+            self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
 
-    #     for j in self.bcoeff_ids:
-    #         child_logits = self._fracs[j][selected_pts_mask]
-    #         eps = 1e-4
-    #         noise = eps * torch.randn_like(child_logits)
-    #         noise -= noise.mean(dim=1, keepdim=True)
-    #         child_logits = child_logits + noise
-    #         self.densification_postfix_per_coeff(child_logits, j)
+
+        # sel = selected_pts_mask
+        # if sel.sum() > 0 and len(self.bcoeff_ids) == 2:
+        #     # stack parent logits
+        #     par0 = self._fracs[0][sel]; par1 = self._fracs[1][sel]
+        #     delta = 0.15 * (torch.rand_like(par0) - 0.5)  # small, zero-mean
+        #     # parent ← lean slightly to Compton
+        #     self._fracs[0] = self.replace_tensor_to_optimizer(self._fracs[0].clone().index_put((sel,), par0 - delta), "fracs_0")["fracs_0"]
+        #     self._fracs[1] = self.replace_tensor_to_optimizer(self._fracs[1].clone().index_put((sel,), par1 + delta), "fracs_1")["fracs_1"]
+        #     # child ← lean slightly to PE
+        #     child0 = (par0 + delta)
+        #     child1 = (par1 - delta)
+        #     self.densification_postfix_per_coeff(child0, 0)
+        #     self.densification_postfix_per_coeff(child1, 1)
+        # else:
+        #     for k in self.bcoeff_ids:
+        #         self.densification_postfix_per_coeff(self._fracs[k][sel], k)
 
     # def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
     #     n_init_points = self.get_xyz.shape[0]
@@ -761,18 +774,11 @@ class GaussianModel:
     #     #     new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
     #     #     self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
 
-    #     # for bcoeff_id in self.bcoeff_ids:
-    #     #     # new_rhos = self._rhos[bcoeff_id][selected_pts_mask].repeat(N,1)
-    #     #     new_fracs = self._fracs[bcoeff_id][selected_pts_mask].repeat(N,1)
-    #     #     # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
-    #     #     self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
-
-    #     for j in self.bcoeff_ids:
-    #         logits = self._fracs[j][selected_pts_mask].repeat(N, 1)
-    #         eps = 1e-4
-    #         noise = eps * torch.randn_like(logits)
-    #         noise -= noise.mean(dim=1, keepdim=True)
-    #         self.densification_postfix_per_coeff(logits + noise, j)
+    #     for bcoeff_id in self.bcoeff_ids:
+    #         # new_rhos = self._rhos[bcoeff_id][selected_pts_mask].repeat(N,1)
+    #         new_fracs = self._fracs[bcoeff_id][selected_pts_mask].repeat(N,1)
+    #         # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
+    #         self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
 
     #     prune_filter = torch.cat(
     #         (
@@ -783,113 +789,113 @@ class GaussianModel:
     #     self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
 
-    def densify_and_prune(
-        self,
-        max_grad,
-        min_opacity,
-        extent,
-        max_screen_size,
-        max_scale,
-        max_num_gaussians,
-        opacity_scale_threshold,
-        bbox=None,
-        only_active_spectra: bool = False,
-    ):
-        """
-        Adaptive control:
-        • clone  → high-grad & small (refine edges)
-        • split  → low-grad  & large (subdivide flats)
-        • prune  → by raw ρ (avoid basis-biased pruning)
-        """
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
+    # def densify_and_prune(
+    #     self,
+    #     max_grad,
+    #     min_opacity,
+    #     extent,
+    #     max_screen_size,
+    #     max_scale,
+    #     max_num_gaussians,
+    #     opacity_scale_threshold,
+    #     bbox=None,
+    #     only_active_spectra: bool = False,
+    # ):
+    #     """
+    #     Adaptive control:
+    #     • clone  → high-grad & small (refine edges)
+    #     • split  → low-grad  & large (subdivide flats)
+    #     • prune  → by raw ρ (avoid basis-biased pruning)
+    #     """
+    #     grads = self.xyz_gradient_accum / self.denom
+    #     grads[grads.isnan()] = 0.0
 
-        # densify if allowed by the global cap
-        if opacity_scale_threshold and (
-            not max_num_gaussians or self.get_xyz.shape[0] < max_num_gaussians
-        ):
-            # high-grad + small → clone
-            self.densify_and_clone(
-                grads,
-                max_grad,
-                extent,
-                opacity_scale_threshold,
-                only_active_spectra=only_active_spectra,
-            )
-            # low-grad + large → split
-            self.densify_and_split(
-                grads,
-                max_grad,
-                extent,
-                opacity_scale_threshold,
-                only_active_spectra=only_active_spectra,
-                N=2,
-            )
+    #     # densify if allowed by the global cap
+    #     if opacity_scale_threshold and (
+    #         not max_num_gaussians or self.get_xyz.shape[0] < max_num_gaussians
+    #     ):
+    #         # high-grad + small → clone
+    #         self.densify_and_clone(
+    #             grads,
+    #             max_grad,
+    #             extent,
+    #             opacity_scale_threshold,
+    #             only_active_spectra=only_active_spectra,
+    #         )
+    #         # low-grad + large → split
+    #         self.densify_and_split(
+    #             grads,
+    #             max_grad,
+    #             extent,
+    #             opacity_scale_threshold,
+    #             only_active_spectra=only_active_spectra,
+    #             N=2,
+    #         )
 
-        # # ---------- pruning (safe) ----------
-        prune_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
+    #     # # ---------- pruning (safe) ----------
+    #     prune_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
 
-        # prune by *raw* density only (do NOT multiply by fractions)
-        prune_mask |= (self.get_rhos.squeeze() < min_opacity)
+    #     # prune by *raw* density only (do NOT multiply by fractions)
+    #     prune_mask |= (self.get_rhos.squeeze() < min_opacity)
 
-        if bbox is not None:
-            xyz = self.get_xyz
-            prune_mask |= (
-                (xyz[:, 0] < bbox[0, 0]) | (xyz[:, 0] > bbox[1, 0]) |
-                (xyz[:, 1] < bbox[0, 1]) | (xyz[:, 1] > bbox[1, 1]) |
-                (xyz[:, 2] < bbox[0, 2]) | (xyz[:, 2] > bbox[1, 2])
-            )
+    #     if bbox is not None:
+    #         xyz = self.get_xyz
+    #         prune_mask |= (
+    #             (xyz[:, 0] < bbox[0, 0]) | (xyz[:, 0] > bbox[1, 0]) |
+    #             (xyz[:, 1] < bbox[0, 1]) | (xyz[:, 1] > bbox[1, 1]) |
+    #             (xyz[:, 2] < bbox[0, 2]) | (xyz[:, 2] > bbox[1, 2])
+    #         )
 
-        if max_screen_size:
-            prune_mask |= (self.max_radii2D > max_screen_size)
+    #     if max_screen_size:
+    #         prune_mask |= (self.max_radii2D > max_screen_size)
 
-        if max_scale:
-            prune_mask |= (self.get_scaling.max(dim=1).values > max_scale)
+    #     if max_scale:
+    #         prune_mask |= (self.get_scaling.max(dim=1).values > max_scale)
 
-        if prune_mask.any():
-            self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
+    #     if prune_mask.any():
+    #         self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
 
     
-    def densify_and_clone(
-        self,
-        grads,
-        grad_threshold,
-        scene_extent,
-        densify_scale_threshold,
-        only_active_spectra: bool,
-    ):
-        """
-        Clone high-gradient, *small* Gaussians.
-        Halve the parent's ρ; child receives the other half.
-        Fractions are copied 1:1 (no noise).
-        """
-        g = torch.norm(grads, dim=-1) if grads.dim() > 1 else grads.flatten().abs()
+    # def densify_and_clone(
+    #     self,
+    #     grads,
+    #     grad_threshold,
+    #     scene_extent,
+    #     densify_scale_threshold,
+    #     only_active_spectra: bool,
+    # ):
+    #     """
+    #     Clone high-gradient, *small* Gaussians.
+    #     Halve the parent's ρ; child receives the other half.
+    #     Fractions are copied 1:1 (no noise).
+    #     """
+    #     g = torch.norm(grads, dim=-1) if grads.dim() > 1 else grads.flatten().abs()
 
-        smax = self.get_scaling.max(dim=1).values
-        small = (smax <= self.percent_dense * scene_extent) & (smax <= densify_scale_threshold)
-        selected = (g >= grad_threshold) & small
-        if selected.sum() == 0:
-            return
+    #     smax = self.get_scaling.max(dim=1).values
+    #     small = (smax <= self.percent_dense * scene_extent) & (smax <= densify_scale_threshold)
+    #     selected = (g >= grad_threshold) & small
+    #     if selected.sum() == 0:
+    #         return
 
-        new_xyz         = self._xyz[selected]
-        new_scaling     = self._scaling[selected]       # raw copy
-        new_rotation    = self._rotation[selected]
-        new_max_radii2D = self.max_radii2D[selected]
+    #     new_xyz         = self._xyz[selected]
+    #     new_scaling     = self._scaling[selected]       # raw copy
+    #     new_rotation    = self._rotation[selected]
+    #     new_max_radii2D = self.max_radii2D[selected]
 
-        with torch.no_grad():
-            rho_sel  = self.get_rhos[selected]          # activated
-            rho_half = 0.5 * rho_sel
-            child_rho_raw = self.rhos_inverse_activation(rho_half)
-            # halve parent as well (in-place under no_grad)
-            self._rhos[selected] = child_rho_raw
+    #     with torch.no_grad():
+    #         rho_sel  = self.get_rhos[selected]          # activated
+    #         rho_half = 0.5 * rho_sel
+    #         child_rho_raw = self.rhos_inverse_activation(rho_half)
+    #         # halve parent as well (in-place under no_grad)
+    #         self._rhos[selected] = child_rho_raw
 
-        self.densification_postfix(
-            new_xyz, new_scaling, new_rotation, new_max_radii2D, child_rho_raw
-        )
+    #     self.densification_postfix(
+    #         new_xyz, new_scaling, new_rotation, new_max_radii2D, child_rho_raw
+    #     )
 
-        # copy logits exactly so mixture is preserved
-        for j in self.bcoeff_ids:
-            self.densification_postfix_per_coeff(self._fracs[j][selected], j)
+    #     # copy logits exactly so mixture is preserved
+    #     for j in self.bcoeff_ids:
+    #         self.densification_postfix_per_coeff(self._fracs[j][selected], j)
 
     def densify_and_split(
         self,

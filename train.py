@@ -112,7 +112,8 @@ def training(
         bfunc_Kedge = BFuncKedge(E_grid).cuda()
 
         with torch.no_grad():
-            bfunc_Kedge.set_gamma(0.5)
+            # bfunc_Kedge.set_gamma(0.5)
+            bfunc_Kedge.set_gamma(1.6)
             # bfunc_Kedge.set_gamma(0.5)
             bfunc_Kedge.set_EK_init(50.0)
             # bfunc_Kedge.set_EK_init(80.0)
@@ -297,9 +298,9 @@ def training(
             f = gaussians.get_fracs 
             f0 = f[:, 0]
             f1 = f[:, 1]
-            print("mean f0, f1:", f0.mean().item(), f1.mean().item())
-            # f2 = f[:, 2]
-            # print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
+            # print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            f2 = f[:, 2]
+            print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
             print("RHOS MEAN: ", gaussians.get_rhos.mean().item())
             print("NUM GAUSSIANS: ", len(gaussians.get_xyz))
             print("-------------------")

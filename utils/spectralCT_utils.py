@@ -9,7 +9,7 @@ EPSILON = 1e-12
 
 
 # ------------------------ Fraction initialization ------------------------
-def pe_compton_from_density(rho, q_lo=0.20, q_hi=0.80, eps=1e-3):
+def pe_compton_from_density(rho, q_lo=0.01, q_hi=0.99, eps=1e-3):
     """
     Monotone logistic prior: high rho -> high PE fraction.
     q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
@@ -33,7 +33,8 @@ def pe_compton_from_density(rho, q_lo=0.20, q_hi=0.80, eps=1e-3):
     rho0 = float(np.exp(log_rho0))
     return f, rho0, float(alpha)
 
-def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+# def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
     """
     Monotone logistic prior: high rho -> high PE fraction.
     q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
@@ -67,6 +68,43 @@ def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_e
 
     rho0 = float(np.exp(log_rho0))
     return frac, rho0, float(alpha)
+
+# def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+# # def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+#     """
+#     Monotone logistic prior: high rho -> high PE fraction.
+#     q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
+#     """
+#     rho = np.asarray(rho, np.float32).reshape(-1)
+#     # pick where the transition lives, from dataset statistics
+#     rho_l = np.quantile(rho, q_lo)
+#     rho_h = np.quantile(rho, q_hi)
+#     rho_l = max(rho_l, eps)
+#     rho_h = max(rho_h, rho_l + 1e-6)
+
+#     # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
+#     log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
+#     alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
+
+#     t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
+#     f_pe_tot = 1.0 / (1.0 + np.exp(-t))
+#     f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
+
+#     f_comp_tot    = 1. - f_pe_tot                                   # rest → Compton
+
+#     # ── 2.  decide how much of that PE budget is actually an edge ─
+#     gate_edge = 1. / (1. + np.exp(-alpha_edge * (rho - rho0_edge)))
+#     f_k       = k_frac_max * gate_edge * f_comp_tot               # ≤ k_frac_max·f_pe_tot
+#     f_comp      = f_comp_tot - f_k
+#     f_pe = f_pe_tot
+
+#     # ── 3.  stack & renormalise (paranoia)  ─────────────────────
+#     frac = np.stack([f_pe, f_comp, f_k], axis=-1)
+#     frac = np.clip(frac, eps, None)
+#     frac /= frac.sum(axis=-1, keepdims=True)
+
+#     rho0 = float(np.exp(log_rho0))
+#     return frac, rho0, float(alpha)
 
 
 # ------------------------ Photoelectric + Compton basis functions ------------------------
