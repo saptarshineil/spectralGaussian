@@ -114,9 +114,7 @@ def training(
         with torch.no_grad():
             # bfunc_Kedge.set_gamma(0.5)
             bfunc_Kedge.set_gamma(1.6)
-            # bfunc_Kedge.set_gamma(0.5)
             bfunc_Kedge.set_EK_init(50.0)
-            # bfunc_Kedge.set_EK_init(80.0)
 
         basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
 
@@ -282,6 +280,10 @@ def training(
         p = gaussians.get_fracs.clamp_min(1e-6)
         entropy = -(p * p.log()).sum(dim=1).mean()
         total_loss += 1e-3 * entropy
+
+        # p = gaussians.get_fracs.clamp_min(1e-6)
+        # dirichlet_sparsity = -torch.log(p).sum(dim=1).mean()   # α≈0.0 prior
+        # total_loss += 1e-3 * dirichlet_sparsity
 
         if n_bcoeffs == 3:
             alpha = bfunc_Kedge.log_alpha.exp()

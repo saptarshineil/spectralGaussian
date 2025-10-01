@@ -92,9 +92,9 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        # self.iterations = 30_000
+        self.iterations = 30_000
         # self.iterations = 10_000
-        self.iterations = 5_000
+        # self.iterations = 5_000
         # self.iterations = 10
         
         # -- Spectral --> Gaussian basics --
@@ -121,26 +121,20 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.percent_dense = 0.01
         self.opacity_reset_interval = 3000
-        # self.opacity_reset_interval = 60000
-        self.lambda_dssim = 0.25              # R2
+        self.lambda_dssim = 0.25
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
+        # self.densify_from_iter = 500           # spectral + R2
         self.densify_from_iter = 2000           # spectral + R2
-        # self.densify_from_iter = 1500           # spectral + R2
-        # self.densify_from_iter = 5000           # spectral + R2
-        # self.densify_from_iter = 50000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
-        self.densify_grad_threshold = 0.0001
-        # self.densify_grad_threshold = 0.00025
+        # self.densify_grad_threshold = 0.0001  # 2 basis
+        # self.densify_grad_threshold = 0.0002  # 3 basis
+        # self.densify_grad_threshold = 0.000075 # 3 basis
+        self.densify_grad_threshold = 0.00005 # 3 basis
         
-        # self.densify_grad_threshold = 0.00001
-        # self.densify_grad_threshold = 0.00005
-        self.switch_iter = 1_500
-
         self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
         self.density_min_threshold = 0.00001   # R2
-        # self.density_min_threshold = 0.000001   # R2
 
         # -- Spectral --> segmentation --
         self.reg3d_interval = 2
@@ -183,10 +177,6 @@ class OptimizationParams(ParamGroup):
         # Density
         self.opacity_lr_init = 0.0001
         self.opacity_lr_final = 0.00001
-        # self.opacity_lr_init = 5e-5
-        # self.opacity_lr_final = 5e-6
-        # self.opacity_lr_init = 0.0005
-        # self.opacity_lr_final = 0.00005
         self.opacity_lr_max_steps = 30_000
         # PE
         self.basis0_lr_init = 0.001
@@ -202,12 +192,11 @@ class OptimizationParams(ParamGroup):
         self.basis2_lr_max_steps = 30000
 
         self.frac_warmup_iters = 1
-        # self.frac_warmup_iters = 1000
+        # self.frac_warmup_iters = 1900
         # self.frac_warmup_iters = 4000
         self.energy_warmup_iters  = 6000
         self.energy_lr_after_warmup = 1e-4
 
-        # self.lambda_tv_basis  = 1e-3
         self.lambda_tv_basis_pe   = 1e-3
         self.lambda_tv_basis_comp = 1e-3
         self.lambda_tv_basis_K = 1e-3

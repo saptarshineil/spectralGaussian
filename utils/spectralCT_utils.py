@@ -34,43 +34,7 @@ def pe_compton_from_density(rho, q_lo=0.01, q_hi=0.99, eps=1e-3):
     return f, rho0, float(alpha)
 
 # def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
-def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
-    """
-    Monotone logistic prior: high rho -> high PE fraction.
-    q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
-    """
-    rho = np.asarray(rho, np.float32).reshape(-1)
-    # pick where the transition lives, from dataset statistics
-    rho_l = np.quantile(rho, q_lo)
-    rho_h = np.quantile(rho, q_hi)
-    rho_l = max(rho_l, eps)
-    rho_h = max(rho_h, rho_l + 1e-6)
-
-    # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
-    log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
-    alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
-
-    t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
-    f_pe_tot = 1.0 / (1.0 + np.exp(-t))
-    f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
-
-    f_comp    = 1. - f_pe_tot                                   # rest → Compton
-
-    # ── 2.  decide how much of that PE budget is actually an edge ─
-    gate_edge = 1. / (1. + np.exp(-alpha_edge * (rho - rho0_edge)))
-    f_k       = k_frac_max * gate_edge * f_pe_tot               # ≤ k_frac_max·f_pe_tot
-    f_pe      = f_pe_tot - f_k
-
-    # ── 3.  stack & renormalise (paranoia)  ─────────────────────
-    frac = np.stack([f_pe, f_comp, f_k], axis=-1)
-    frac = np.clip(frac, eps, None)
-    frac /= frac.sum(axis=-1, keepdims=True)
-
-    rho0 = float(np.exp(log_rho0))
-    return frac, rho0, float(alpha)
-
-# def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
-# # def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+# def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
 #     """
 #     Monotone logistic prior: high rho -> high PE fraction.
 #     q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
@@ -90,13 +54,12 @@ def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_e
 #     f_pe_tot = 1.0 / (1.0 + np.exp(-t))
 #     f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
 
-#     f_comp_tot    = 1. - f_pe_tot                                   # rest → Compton
+#     f_comp    = 1. - f_pe_tot                                   # rest → Compton
 
 #     # ── 2.  decide how much of that PE budget is actually an edge ─
 #     gate_edge = 1. / (1. + np.exp(-alpha_edge * (rho - rho0_edge)))
-#     f_k       = k_frac_max * gate_edge * f_comp_tot               # ≤ k_frac_max·f_pe_tot
-#     f_comp      = f_comp_tot - f_k
-#     f_pe = f_pe_tot
+#     f_k       = k_frac_max * gate_edge * f_pe_tot               # ≤ k_frac_max·f_pe_tot
+#     f_pe      = f_pe_tot - f_k
 
 #     # ── 3.  stack & renormalise (paranoia)  ─────────────────────
 #     frac = np.stack([f_pe, f_comp, f_k], axis=-1)
@@ -105,6 +68,65 @@ def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_e
 
 #     rho0 = float(np.exp(log_rho0))
 #     return frac, rho0, float(alpha)
+
+def pe_comp_kedge_from_density(
+    rho,
+    q_lo=0.01,
+    q_hi=0.99,
+    rho0_edge="q95",        # data-driven threshold for K gate (string "qXX" or float)
+    alpha_edge=12.0,        # steeper gate than before
+    # k_frac_max=0.99,        # allow more K (but keep <1.0)
+    k_frac_max=0.75,        # allow more K (but keep <1.0)
+    pe_shift=1.25,          # shift logistic toward higher PE fraction
+    pe_slope=1.15,          # steepen logistic slope for PE
+    eps=1e-3
+):
+    """
+    Initialize fractions for (PE, Compton, K-edge) from density.
+
+    - Monotone logistic prior: high rho -> high PE fraction.
+    - K-edge fraction carved out of PE fraction, with data-driven gating.
+    - Parameters (pe_shift, pe_slope, k_frac_max) let you bias toward more K.
+    """
+
+    rho = np.asarray(rho, np.float32).reshape(-1)
+
+    # --- 1. logistic for PE vs Compton ----------------------------
+    rho_l = max(np.quantile(rho, q_lo), eps)
+    rho_h = max(np.quantile(rho, q_hi), rho_l + 1e-6)
+
+    log_rho0 = 0.5 * (np.log(rho_l) + np.log(rho_h))
+    alpha = 2.0 * np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)
+
+    # bias PE upward: earlier transition and a bit steeper
+    log_rho0 -= np.log(pe_shift)
+    alpha *= pe_slope
+
+    t = alpha * (np.log(np.clip(rho, eps, None)) - log_rho0)
+    f_pe_tot = 1.0 / (1.0 + np.exp(-t))
+    f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
+
+    f_comp = 1.0 - f_pe_tot
+
+    # --- 2. carve out a K-edge component from PE ------------------
+    # resolve rho0_edge if it's a string like "q95"
+    if isinstance(rho0_edge, str) and rho0_edge.startswith("q"):
+        q = float(rho0_edge[1:]) / 100.0
+        rho0_edge = float(np.quantile(rho, q))
+
+    gate_edge = 1.0 / (1.0 + np.exp(-alpha_edge * (rho - rho0_edge)))
+
+    f_k = k_frac_max * gate_edge * f_pe_tot
+    f_pe = f_pe_tot - f_k
+
+    # --- 3. stack & renormalise ----------------------------------
+    frac = np.stack([f_pe, f_comp, f_k], axis=-1)
+    frac = np.clip(frac, eps, None)
+    frac /= frac.sum(axis=-1, keepdims=True)
+
+    rho0 = float(np.exp(log_rho0))
+    return frac, rho0, float(alpha)
+    
 
 
 # ------------------------ Photoelectric + Compton basis functions ------------------------
@@ -280,7 +302,8 @@ def render_image(bcoeff_image, bfunc_Kedge, E, E_grid, w_k, S, W, I0_scalar, n_b
         B_raw = get_B_E(E_grid, bfunc_Kedge, normalize=False)
         B_raw = orthogonalize_k_to_pe_compton(B_raw, W)
         B_E, _ = renormalize_col_at_pivot(E_grid, B_raw, E_ref=70.0)
-        bfuncs = get_B_E_at_energy(E_grid, bfunc_Kedge, E[spectral_id], normalize=True)
+        # bfuncs = get_B_E_at_energy(E_grid, bfunc_Kedge, E[spectral_id], normalize=True)
+        bfuncs = torch.stack([interp1d(E_grid, B_E[:, j], E[spectral_id]) for j in range(B_E.shape[1])], dim=0)
     else:
         B_E = get_B_E(E_grid, None, normalize=True)
         bfuncs = get_B_E_at_energy(E_grid, None, E[spectral_id], normalize=True)

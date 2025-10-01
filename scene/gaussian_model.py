@@ -187,7 +187,8 @@ class GaussianModel:
         raw = torch.cat(self._fracs, dim=1)
         # eps = getattr(self, "_frac_eps", 0.05)
         # return stable_simplex(raw, eps=eps, s_ref_binary=1.0)
-        eps = getattr(self, "_frac_eps", 0.80)
+        # eps = getattr(self, "_frac_eps", 0.80)
+        eps = getattr(self, "_frac_eps", 0.10)
         return stable_simplex(raw, eps=eps)
         # return stable_simplex(raw, tau=1.0, eps=0.02)
 
@@ -511,17 +512,10 @@ class GaussianModel:
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
 
-        # T = 500.0
-        # t = min(1.0, iteration / T)
-        # self._frac_eps = float(0.10 * (1.0 - t))
-
         T = 4000.0
         t = min(1.0, iteration / T)
-        self._frac_eps = float(0.80 * (1.0 - t)) 
-
-        # T = 3000.0
-        # t = min(1.0, iteration / T)
-        # self._frac_eps = float(0.20 * (1.0 - t))
+        self._frac_eps = float(0.20 * (1.0 - t)) 
+        # self._frac_eps = float(0.80 * (1.0 - t)) 
 
         # Spectral Gaussian
         # parameter_list = []
@@ -533,6 +527,7 @@ class GaussianModel:
 
     # ------------------ Reset Opacity ------------------
     # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
     #     with torch.no_grad():
     #         rho    = self.rhos_activation(self._rhos)
     #         rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
