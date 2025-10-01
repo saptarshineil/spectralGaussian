@@ -612,7 +612,8 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
-        # ratio = [0.6, 0.4]
+        # ratio = [0.33, 0.33, 0.33]
+        # ratio = [0.25, 0.50, 0.25]
         # fractions = np.tile(ratio, (point_cloud.shape[0], 1)).astype(np.float32)
         # fractions += np.random.normal(0, 0.01, size=fractions.shape)  # Increased noise stddev to 0.4
         # fractions = np.clip(fractions, 1e-6, None)

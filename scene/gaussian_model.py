@@ -180,17 +180,14 @@ class GaussianModel:
         return rho
     
     @property
-    # def get_fracs(self):
-    #     raw = torch.cat(self._fracs, dim=1)
-    #     return torch.softmax(raw, dim=1)
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
-        # eps = getattr(self, "_frac_eps", 0.05)
-        # return stable_simplex(raw, eps=eps, s_ref_binary=1.0)
-        # eps = getattr(self, "_frac_eps", 0.80)
-        eps = getattr(self, "_frac_eps", 0.10)
-        return stable_simplex(raw, eps=eps)
-        # return stable_simplex(raw, tau=1.0, eps=0.02)
+        return torch.softmax(raw, dim=1)
+
+    # def get_fracs(self):
+    #     raw = torch.cat(self._fracs, dim=1)
+    #     eps = getattr(self, "_frac_eps", 0.10)
+    #     return stable_simplex(raw, eps=eps)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -454,42 +451,42 @@ class GaussianModel:
                     max_steps=getattr(training_args, f"basis{j}_lr_max_steps"),
                 ))
             
-    def _update_learning_rate(self, iteration, param):
-        for param_group in self.optimizer.param_groups:
-            if param_group["name"] == param:
-                try:
-                    if param.endswith(str(self.active_spectra)):
-                        spectral_id = int(param[-1])
-                        param_new = param[:-2]
-                        lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
-                    else:    
-                        lr = getattr(self, f"{param}_scheduler_args")(iteration)
-                    param_group['lr'] = lr
-                    return lr
-                except AttributeError:
-                    pass
-            if param_group["lr"] == 0.0:           # frozen
-                return 0.0
-
     # def _update_learning_rate(self, iteration, param):
     #     for param_group in self.optimizer.param_groups:
     #         if param_group["name"] == param:
-    #             if param == "rhos" and getattr(self, "_rho_frozen", False):
-    #                 param_group["lr"] = 0.0
-    #                 return 0.0
     #             try:
     #                 if param.endswith(str(self.active_spectra)):
     #                     spectral_id = int(param[-1])
     #                     param_new = param[:-2]
     #                     lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
-    #                 else:
+    #                 else:    
     #                     lr = getattr(self, f"{param}_scheduler_args")(iteration)
-    #                 param_group["lr"] = lr
+    #                 param_group['lr'] = lr
     #                 return lr
     #             except AttributeError:
     #                 pass
-    #         if param_group["lr"] == 0.0:
+    #         if param_group["lr"] == 0.0:           # frozen
     #             return 0.0
+
+    def _update_learning_rate(self, iteration, param):
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == param:
+                if param == "rhos" and getattr(self, "_rho_frozen", False):
+                    param_group["lr"] = 0.0
+                    return 0.0
+                try:
+                    if param.endswith(str(self.active_spectra)):
+                        spectral_id = int(param[-1])
+                        param_new = param[:-2]
+                        lr = getattr(self, f"{param_new}_scheduler_args[{spectral_id}]")(iteration)
+                    else:
+                        lr = getattr(self, f"{param}_scheduler_args")(iteration)
+                    param_group["lr"] = lr
+                    return lr
+                except AttributeError:
+                    pass
+            if param_group["lr"] == 0.0:
+                return 0.0
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
@@ -527,7 +524,7 @@ class GaussianModel:
 
     # ------------------ Reset Opacity ------------------
     # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+    # # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
     #     with torch.no_grad():
     #         rho    = self.rhos_activation(self._rhos)
     #         rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
@@ -548,7 +545,8 @@ class GaussianModel:
 
     #         self.decay_optimizer_moments(decay=0.5)
 
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
         with torch.no_grad():
             rho    = self.rhos_activation(self._rhos)
             rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))

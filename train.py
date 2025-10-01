@@ -272,14 +272,22 @@ def training(
         tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
         tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
         bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
-        if n_bcoeffs == 3:
-            tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
-            bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
+        # if n_bcoeffs == 3:
+        #     tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
+        #     bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
         total_loss += bcoeff_loss
 
         p = gaussians.get_fracs.clamp_min(1e-6)
         entropy = -(p * p.log()).sum(dim=1).mean()
         total_loss += 1e-3 * entropy
+
+        # p = gaussians.get_fracs.clamp_min(1e-6)
+        # f_k = p[:, 2] if n_bcoeffs == 3 else None
+        # if f_k is not None:
+        #     rho = gaussians.get_rhos[:, 0]
+        #     rho_edge = torch.quantile(rho.detach(), 0.95)
+        #     gate = torch.sigmoid(12.0 * (rho - rho_edge))  # ~1 only in densest 5%
+        #     total_loss += 1e-3 * ((1.0 - gate) * f_k).mean()
 
         # p = gaussians.get_fracs.clamp_min(1e-6)
         # dirichlet_sparsity = -torch.log(p).sum(dim=1).mean()   # α≈0.0 prior
@@ -288,6 +296,14 @@ def training(
         if n_bcoeffs == 3:
             alpha = bfunc_Kedge.log_alpha.exp()
             total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
+            # total_loss += 1e-3 * (torch.log(alpha / 0.1)**2)
+
+        p = gaussians.get_fracs
+        if p.shape[1] == 3:
+            rho = gaussians.get_rhos[:,0].detach()
+            rho_edge = torch.quantile(rho, 0.95)
+            gate = torch.sigmoid(12.0 * (rho - rho_edge))
+            total_loss += 1e-3 * ((1.0 - gate) * p[:,2]).mean()
 
         total_loss.backward()
        
@@ -367,7 +383,7 @@ def training(
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
-            if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            if iteration == 2 or iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_bcoeffs()
 
             # Optimizer step
