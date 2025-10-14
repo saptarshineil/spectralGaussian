@@ -113,10 +113,14 @@ def training(
 
         with torch.no_grad():
             # bfunc_Kedge.set_gamma(0.5)
-            bfunc_Kedge.set_gamma(1.6)
+            bfunc_Kedge.set_gamma(1.5)
             bfunc_Kedge.set_EK_init(50.0)
 
+        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.001)
+        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0006)
+        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0005)
         basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
+        kedge_frozen = False    
 
     energy_logits = torch.nn.Parameter(
         # torch.tensor([1.0, 1.0, 1.0], device='cuda', dtype=torch.float32)
@@ -130,8 +134,8 @@ def training(
     
     # energy_opt = torch.optim.Adam([energy_logits], lr=1e-4)
 
-    FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
-    gaussians.freeze_rhos()
+    # FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
+    # gaussians.freeze_rhos()
 
     # --------------------------------------
     # Set up 3D TV loss
@@ -172,10 +176,10 @@ def training(
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        if (iteration - 1) == FRAC_WARMUP_ITERS:
-            gaussians.unfreeze_rhos()
-            gaussians.update_learning_rate(iteration)
-            print(f"[warmup] Unfroze ρ at iter {iteration}, lr now scheduled.")
+        # if (iteration - 1) == FRAC_WARMUP_ITERS:
+        #     gaussians.unfreeze_rhos()
+        #     gaussians.update_learning_rate(iteration)
+        #     print(f"[warmup] Unfroze ρ at iter {iteration}, lr now scheduled.")
         
         # Track losses
         losses_per_energy = []
@@ -272,14 +276,18 @@ def training(
         tv_pe   = joint_tv(bcoeff_image[0:1], reduction='mean')
         tv_co   = joint_tv(bcoeff_image[1:2], reduction='mean')
         bcoeff_loss  = opt.lambda_tv_basis_pe * tv_pe + opt.lambda_tv_basis_comp * tv_co
-        # if n_bcoeffs == 3:
-        #     tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
-        #     bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
+        if n_bcoeffs == 3:
+            tv_K = joint_tv(bcoeff_image[2:3], reduction='mean')
+            bcoeff_loss  += opt.lambda_tv_basis_K * tv_K
         total_loss += bcoeff_loss
 
-        p = gaussians.get_fracs.clamp_min(1e-6)
-        entropy = -(p * p.log()).sum(dim=1).mean()
-        total_loss += 1e-3 * entropy
+        # p = gaussians.get_fracs.clamp_min(1e-6)
+        # mix_entropy = -(p * p.log()).sum(dim=1).mean()      # high when spread, low when one-hot
+        # total_loss += opt.lambda_mix_entropy * mix_entropy  # try 1e-3 to 3e-3
+
+        # p = gaussians.get_fracs.clamp_min(1e-6)
+        # entropy = -(p * p.log()).sum(dim=1).mean()
+        # total_loss += 1e-5 * entropy
 
         # p = gaussians.get_fracs.clamp_min(1e-6)
         # f_k = p[:, 2] if n_bcoeffs == 3 else None
@@ -295,8 +303,25 @@ def training(
 
         if n_bcoeffs == 3:
             alpha = bfunc_Kedge.log_alpha.exp()
-            total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
-            # total_loss += 1e-3 * (torch.log(alpha / 0.1)**2)
+            total_loss += 1e-3 * (torch.log(alpha / 0.1)**2)
+            # total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
+
+        # p   = gaussians.get_fracs.clamp_min(1e-8)       # (N, C) per-Gaussian fractions
+        # rho = gaussians.get_rhos[:, 0].detach()         # (N,) use as spatial weight
+
+        # # weight sparsity more where density is high (where overlap hurts the image)
+        # w = (rho / (rho.mean() + 1e-12)).clamp_max(3.0)
+        # mix_entropy = (w * (-(p * p.log()).sum(dim=1))).mean()   # low entropy ⇒ one-hot
+        # total_loss += opt.lambda_mix_entropy * mix_entropy
+
+        # # 2.2  class-specific sparsity for K-edge (very small spatial support)
+        # if n_bcoeffs == 3 and opt.lambda_k_l1 > 0.0:
+        #     k_mass = (rho * p[:, 2])                      # ρ × f_K  (per-Gaussian K "mass")
+        #     total_loss += opt.lambda_k_l1 * k_mass.mean()
+
+        # # 2.3  (optional) Total Nuclear Variation across bases to align edges & reduce cross-talk
+        # if opt.lambda_tnv > 0.0:
+        #     total_loss += opt.lambda_tnv * tnv_tv(bcoeff_image, reduction="mean")
 
         p = gaussians.get_fracs
         if p.shape[1] == 3:
@@ -304,6 +329,7 @@ def training(
             rho_edge = torch.quantile(rho, 0.95)
             gate = torch.sigmoid(12.0 * (rho - rho_edge))
             total_loss += 1e-3 * ((1.0 - gate) * p[:,2]).mean()
+            # total_loss += 1e-5 * ((1.0 - gate) * p[:,2]).mean()
 
         total_loss.backward()
        
@@ -383,15 +409,36 @@ def training(
                 raise ValueError(
                     "No Gaussian left. Change adaptive control hyperparameters!"
                 )
-            if iteration == 2 or iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            # if iteration == 2 or iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            #     gaussians.reset_bcoeffs()
+
+            if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_bcoeffs()
+
+            # if iteration == 2:
+            #     gaussians.reset_bcoeffs2()
+
+            if (not kedge_frozen) and (bfunc_Kedge is not None) and (iteration >= opt.kedge_freeze_iter):
+                # stop learning the spectral shape
+                for p in bfunc_Kedge.parameters():
+                    p.requires_grad_(False)
+
+                # make sure its optimizer won't touch it anymore
+                if basis_opt is not None:
+                    for g in basis_opt.param_groups:
+                        g["lr"] = 0.0
+                    # (optional) drop optimizer state for a tiny memory win
+                    basis_opt.state = {}
+
+                kedge_frozen = True
+                print(f"[k-edge] basis frozen at iter {iteration}")
 
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
                 gaussians.update_learning_rate(iteration)
-                if basis_opt:
+                if basis_opt and not kedge_frozen:
                     basis_opt.step()
                     basis_opt.zero_grad(set_to_none=True)
                 # energy_opt.step()

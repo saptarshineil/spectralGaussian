@@ -34,51 +34,51 @@ def pe_compton_from_density(rho, q_lo=0.01, q_hi=0.99, eps=1e-3):
     return f, rho0, float(alpha)
 
 # def pe_comp_kedge_from_density(rho, q_lo=0.20, q_hi=0.80, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
-def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
-    """
-    Monotone logistic prior: high rho -> high PE fraction.
-    q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
-    """
-    rho = np.asarray(rho, np.float32).reshape(-1)
-    # pick where the transition lives, from dataset statistics
-    rho_l = np.quantile(rho, q_lo)
-    rho_h = np.quantile(rho, q_hi)
-    rho_l = max(rho_l, eps)
-    rho_h = max(rho_h, rho_l + 1e-6)
+# # def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_edge=10.0, k_frac_max=0.60, eps=1e-3):
+#     """
+#     Monotone logistic prior: high rho -> high PE fraction.
+#     q_lo,q_hi set where f_PE hits ~0.1 and ~0.9, respectively.
+#     """
+#     rho = np.asarray(rho, np.float32).reshape(-1)
+#     # pick where the transition lives, from dataset statistics
+#     rho_l = np.quantile(rho, q_lo)
+#     rho_h = np.quantile(rho, q_hi)
+#     rho_l = max(rho_l, eps)
+#     rho_h = max(rho_h, rho_l + 1e-6)
 
-    # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
-    log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
-    alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
+#     # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
+#     log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
+#     alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
 
-    t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
-    f_pe_tot = 1.0 / (1.0 + np.exp(-t))
-    f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
+#     t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
+#     f_pe_tot = 1.0 / (1.0 + np.exp(-t))
+#     f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
 
-    f_comp    = 1. - f_pe_tot                                   # rest → Compton
+#     f_comp    = 1. - f_pe_tot                                   # rest → Compton
 
-    # ── 2.  decide how much of that PE budget is actually an edge ─
-    gate_edge = 1. / (1. + np.exp(-alpha_edge * (rho - rho0_edge)))
-    f_k       = k_frac_max * gate_edge * f_pe_tot               # ≤ k_frac_max·f_pe_tot
-    f_pe      = f_pe_tot - f_k
+#     # ── 2.  decide how much of that PE budget is actually an edge ─
+#     gate_edge = 1. / (1. + np.exp(-alpha_edge * (rho - rho0_edge)))
+#     f_k       = k_frac_max * gate_edge * f_pe_tot               # ≤ k_frac_max·f_pe_tot
+#     f_pe      = f_pe_tot - f_k
 
-    # ── 3.  stack & renormalise (paranoia)  ─────────────────────
-    frac = np.stack([f_pe, f_comp, f_k], axis=-1)
-    frac = np.clip(frac, eps, None)
-    frac /= frac.sum(axis=-1, keepdims=True)
+#     # ── 3.  stack & renormalise (paranoia)  ─────────────────────
+#     frac = np.stack([f_pe, f_comp, f_k], axis=-1)
+#     frac = np.clip(frac, eps, None)
+#     frac /= frac.sum(axis=-1, keepdims=True)
 
-    rho0 = float(np.exp(log_rho0))
-    return frac, rho0, float(alpha)
+#     rho0 = float(np.exp(log_rho0))
+#     return frac, rho0, float(alpha)
 
 # def pe_comp_kedge_from_density(
 #     rho,
-#     q_lo=0.01,
-#     q_hi=0.99,
+#     q_lo=0.20,
+#     q_hi=0.80,
 #     rho0_edge="q95",        # data-driven threshold for K gate (string "qXX" or float)
 #     alpha_edge=12.0,        # steeper gate than before
-#     k_frac_max=0.99,        # allow more K (but keep <1.0)
-#     # k_frac_max=0.75,        # allow more K (but keep <1.0)
+#     # k_frac_max=0.99,        # allow more K (but keep <1.0)
+#     k_frac_max=0.60,        # allow more K (but keep <1.0)
 #     pe_shift=1.25,          # shift logistic toward higher PE fraction
-#     pe_slope=1.15,          # steepen logistic slope for PE
+#     pe_slope=10.15,          # steepen logistic slope for PE
 #     eps=1e-3
 # ):
 #     """
@@ -126,13 +126,222 @@ def pe_comp_kedge_from_density(rho, q_lo=0.01, q_hi=0.99, rho0_edge=2.4, alpha_e
 
 #     rho0 = float(np.exp(log_rho0))
 #     return frac, rho0, float(alpha)
+
+
+# 1
+def pe_comp_kedge_from_density(
+    rho,
+    *,
+    xyz,                        # (N,3) REQUIRED: used in a generic, dataset-agnostic way
+    # --- PE vs Compton (logistic on log-rho) ---
+    q_lo=0.01,
+    q_hi=0.99,
+    pe_shift=1.15,
+    pe_slope=1.10,
+    # --- K (outer shell) gate, geometry-agnostic ---
+    shell_q=0.90,              # global Mahalanobis-radius quantile for “outer shell”
+    # shell_q=0.70,              # global Mahalanobis-radius quantile for “outer shell”
+    alpha_shell=14.0,          # steepness of the shell gate
+    # optional local equalization to avoid one-sided yellow
+    use_local_rank=True,
+    local_k=48,
+    local_q=0.90,
+    local_alpha=10.0,
+    # --- safety / regularizers ---
+    rho0_edge="q95",
+    alpha_edge=12.0,
+    top_p=0.0,                 # 0 disables hard cap
+    k_frac_max=0.60,
+    eps=1e-3
+):
+    """
+    Initialize (PE, Compton, K-edge) from density and position without any
+    dataset-specific plane/cylinder assumptions.
+
+    Idea:
+      • PE/Compton: logistic on log(rho).
+      • K-edge: part of PE but only where the Mahalanobis radius is large
+        (outer shell); optional kNN local equalization for uniformity.
+    Returns: frac (N,3) in (PE, Compton, K), rho0, alpha
+    """
+    rho = np.asarray(rho, np.float32).reshape(-1)
+    pts = np.asarray(xyz, np.float32).reshape(-1, 3)
+    N   = rho.size
+
+    # ---------- 1) PE vs Compton on log-ρ ----------
+    rho_l = np.quantile(rho, q_lo)
+    rho_h = np.quantile(rho, q_hi)
+    rho_l = max(rho_l, eps)
+    rho_h = max(rho_h, rho_l + 1e-6)
+
+    # logistic params in log-space: f = sigmoid(alpha*(log(rho)-log(rho0)))
+    log_rho0 = 0.5*(np.log(rho_l) + np.log(rho_h))
+    alpha = 2.0*np.log(9.0) / (np.log(rho_h) - np.log(rho_l) + 1e-12)  # 10%->90% width
+
+    t = alpha*(np.log(np.clip(rho, eps, None)) - log_rho0)
+    f_pe_tot = 1.0 / (1.0 + np.exp(-t))
+    f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
+    f_comp   = 1.0 - f_pe_tot
+
+    # ---------- 2) Robust center + whitening (Mahalanobis radius) ----------
+    # weight center/cov by rho so the soft/bone band drives the fit
+    r50, r90 = np.quantile(rho, [0.50, 0.90])
+    w = np.clip((rho - r50) / (r90 - r50 + 1e-12), 0.0, 1.0)  # robust, in [0,1]
+    w = (w + 1e-6)  # avoid zeros
+
+    c = (w[:, None] * pts).sum(axis=0) / (w.sum() + 1e-12)
+    X = pts - c[None, :]
+
+    # weighted covariance with shrinkage for stability
+    Xw = X * np.sqrt(w[:, None])
+    cov = (Xw.T @ Xw) / (w.sum() + 1e-12)
+    tr  = np.trace(cov)
+    cov += 1e-3 * (tr / 3.0 + 1e-9) * np.eye(3, dtype=np.float32)
+
+    # whiten: Y = X @ W, with W = U diag(1/sqrt(s)) U^T
+    s, U = np.linalg.eigh(cov)
+    s = np.clip(s, 1e-9, None)
+    Winv_sqrt = (U / np.sqrt(s))[..., :] @ U.T     # (3,3)
+    Y = X @ Winv_sqrt.T
+    rM = np.linalg.norm(Y, axis=1)                 # Mahalanobis radius
+
+    # global outer-shell gate
+    r_thr = np.quantile(rM, shell_q)
+    g_shell = 1.0 / (1.0 + np.exp(-alpha_shell * ((rM - r_thr) / (r_thr + 1e-9))))
+
+    # ---------- 3) Local rank equalization (optional) ----------
+    # if use_local_rank:
+    #     try:
+    #         from scipy.spatial import cKDTree
+    #         tree = cKDTree(Y.astype(np.float32))
+    #         # include self in k, then ignore first column when computing quantile
+    #         k = min(local_k + 1, max(2, N))
+    #         _, nn_idx = tree.query(Y, k=k)
+    #         # gather neighbors’ rM and take per-row quantile (ignoring self at [:,0])
+    #         neigh_r = rM[nn_idx]
+    #         if neigh_r.ndim == 1:  # N==1 edge case
+    #             qloc = np.full_like(rM, r_thr, dtype=np.float32)
+    #         else:
+    #             qloc = np.quantile(neigh_r[:, 1:], local_q, axis=1)
+    #         g_loc = 1.0 / (1.0 + np.exp(-local_alpha * ((rM - qloc) / (qloc + 1e-9))))
+    #     except Exception:
+    #         # fallback: no local equalization
+    #         g_loc = 1.0
+    # else:
+    #     g_loc = 1.0
+
+    # small density safety gate to suppress obvious air/background
+    if isinstance(rho0_edge, str) and rho0_edge.startswith("q"):
+        q = float(rho0_edge[1:]) / 100.0
+        rho0_edge = float(np.quantile(rho, q))
+    g_rho = 1.0 / (1.0 + np.exp(-alpha_edge * (rho - float(rho0_edge))))
+
+    # g = g_shell * g_loc * g_rho
+    g = g_shell * g_rho
+
+    # # optional hard cap by largest radii
+    # if top_p and top_p > 0.0:
+    #     kk = max(1, int(top_p * N))
+    #     idx = np.argpartition(rM, -kk)[-kk:]
+    #     hard = np.zeros_like(rM, dtype=np.float32); hard[idx] = 1.0
+    #     g *= hard
+
+    # ---------- 4) Carve K out of PE and normalize ----------
+    f_k  = k_frac_max * g * f_pe_tot        # K is a part of PE
+    f_pe = f_pe_tot - f_k
+
+    frac = np.stack([f_pe, f_comp, f_k], axis=-1).astype(np.float32)
+    frac = np.clip(frac, eps, None)
+    frac /= frac.sum(axis=-1, keepdims=True)
+    return frac, float(np.exp(log_rho0)), float(alpha)
+
+
+# 2
+# def pe_comp_kedge_from_density(
+#     rho,
+#     q_lo=0.02,
+#     q_hi=0.98,
+#     rho0_edge="q95",
+#     alpha_edge=12.0,
+#     k_frac_max=0.90,
+#     pe_shift=1.15,
+#     pe_slope=1.10,
+#     eps=1e-3,
+#     *,
+#     xyz=None,
+#     shell_q=0.90,
+#     shell_alpha=18.0,
+#     top_p=0.01
+# ):
+#     """
+#     Initialize (PE, Compton, K-edge) from rho (+ geometry).
+#       1) PE vs Compton: logistic on log(rho).
+#       2) K-edge: carved from PE_total but gated by an OUTER-SHELL prior
+#          (large radius from robust center). Optional ρ gate/top-p retained
+#          only as safeguards.
+#     """
+
+#     rho = np.asarray(rho, np.float32).reshape(-1)
+#     N   = rho.size
+#     lr  = np.log(np.clip(rho, eps, None))
+
+#     # ---- 1) PE vs Compton on log-ρ (well-conditioned) -------------------------
+#     r_lo = max(np.quantile(rho, q_lo), eps)
+#     r_hi = max(np.quantile(rho, q_hi), r_lo + 1e-6)
+#     log_rho0 = 0.5 * (np.log(r_lo) + np.log(r_hi))
+#     alpha    = 2.0 * np.log(9.0) / (np.log(r_hi) - np.log(r_lo) + 1e-12)
+#     log_rho0 -= np.log(pe_shift)
+#     alpha    *= pe_slope
+
+#     t        = alpha * (lr - log_rho0)
+#     f_pe_tot = 1.0 / (1.0 + np.exp(-t))
+#     f_pe_tot = np.clip(f_pe_tot, eps, 1.0 - eps)
+#     f_comp   = 1.0 - f_pe_tot
+
+#     # ---- 2) OUTER-SHELL gate (swaps yellow to the outside) --------------------
+#     # Robust center (median) and radius
+#     if xyz is None:
+#         raise ValueError("pe_comp_kedge_from_density(...): xyz is required for shell gating.")
+#     pts   = np.asarray(xyz, np.float32).reshape(N, 3)
+#     c_med = np.median(pts, axis=0)
+#     r     = np.linalg.norm(pts - c_med[None, :], axis=1)        # Euclidean radius
+#     r_thr = np.quantile(r, shell_q)
+#     # steep logistic that turns on only near/after r_thr
+#     g_shell = 1.0 / (1.0 + np.exp(-shell_alpha * ((r - r_thr) / (r_thr + 1e-9))))
+
+#     # Optional small ρ gate to prevent K in obvious air/background
+#     if isinstance(rho0_edge, str) and rho0_edge.startswith("q"):
+#         q = float(rho0_edge[1:]) / 100.0
+#         rho0_edge = float(np.quantile(rho, q))
+#     g_rho = 1.0 / (1.0 + np.exp(-alpha_edge * (rho - float(rho0_edge))))
+
+#     g = g_shell * g_rho
+
+#     # Optional hard cap: only top-p by radius can carry K at init
+#     if top_p and top_p > 0.0:
+#         k = max(1, int(top_p * N))
+#         idx = np.argpartition(r, -k)[-k:]
+#         hard = np.zeros_like(r, dtype=np.float32)
+#         hard[idx] = 1.0
+#         g *= hard
+
+#     # ---- 3) carve K from PE and renormalize -----------------------------------
+#     f_k  = k_frac_max * g * f_pe_tot        # physics: K is a part of PE
+#     f_pe = f_pe_tot - f_k
+
+#     frac = np.stack([f_pe, f_comp, f_k], axis=-1).astype(np.float32)
+#     frac = np.clip(frac, eps, None)
+#     frac /= frac.sum(axis=-1, keepdims=True)
+#     return frac, float(np.exp(log_rho0)), float(alpha)
+
+
     
 
 
 # ------------------------ Photoelectric + Compton basis functions ------------------------
 def bfunc_PE(E_keV: torch.Tensor) -> torch.Tensor:
     E_keV = torch.as_tensor(E_keV, dtype=torch.float32, device=E_keV.device)
-    # return torch.pow(E_keV, -3.5)       
+    # return torch.pow(E_keV, -3.5)
     return torch.pow(E_keV, -3.0)
 
 def bfunc_Compton(E_keV: torch.Tensor,

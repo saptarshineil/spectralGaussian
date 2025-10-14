@@ -612,8 +612,9 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
-        # ratio = [0.33, 0.33, 0.33]
-        # ratio = [0.25, 0.50, 0.25]
+        # # ratio = [0.33, 0.33, 0.33]
+        # # ratio = [0.10, 0.10, 0.80]
+        # ratio = [0.01, 0.01, 0.98]
         # fractions = np.tile(ratio, (point_cloud.shape[0], 1)).astype(np.float32)
         # fractions += np.random.normal(0, 0.01, size=fractions.shape)  # Increased noise stddev to 0.4
         # fractions = np.clip(fractions, 1e-6, None)
@@ -623,7 +624,7 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
             fractions, _, _ = pe_compton_from_density(rhos[:,0])
         else:
             # fractions = analytic_fraction_3(rhos[:,0])
-            fractions, _, _ = pe_comp_kedge_from_density(rhos[:,0])
+            fractions, _, _ = pe_comp_kedge_from_density(rhos[:,0], xyz=xyz)
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
         ply_path = os.path.join(path, "init_pcd.ply")
