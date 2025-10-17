@@ -116,10 +116,8 @@ def training(
             bfunc_Kedge.set_gamma(1.5)
             bfunc_Kedge.set_EK_init(50.0)
 
-        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.001)
-        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0006)
-        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0005)
-        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
+        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.001)
+        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
         kedge_frozen = False    
 
     energy_logits = torch.nn.Parameter(
@@ -260,7 +258,8 @@ def training(
                     spectral_id,
                 )["ct"]
                 loss_tv = tv_3d_loss(vol_pred, reduction="mean")
-                loss += opt.lambda_tv * loss_tv
+                # loss += opt.lambda_tv * loss_tv
+                loss += (opt.lambda_tv / len(spectral_ids)) * loss_tv
 
             losses_per_energy.append(loss)
 
@@ -285,9 +284,10 @@ def training(
         # mix_entropy = -(p * p.log()).sum(dim=1).mean()      # high when spread, low when one-hot
         # total_loss += opt.lambda_mix_entropy * mix_entropy  # try 1e-3 to 3e-3
 
-        # p = gaussians.get_fracs.clamp_min(1e-6)
-        # entropy = -(p * p.log()).sum(dim=1).mean()
-        # total_loss += 1e-5 * entropy
+        p = gaussians.get_fracs.clamp_min(1e-6)
+        entropy = -(p * p.log()).sum(dim=1).mean()
+        total_loss += 1e-3 * entropy
+        # total_loss += 2e-3 * entropy
 
         # p = gaussians.get_fracs.clamp_min(1e-6)
         # f_k = p[:, 2] if n_bcoeffs == 3 else None
@@ -301,10 +301,10 @@ def training(
         # dirichlet_sparsity = -torch.log(p).sum(dim=1).mean()   # α≈0.0 prior
         # total_loss += 1e-3 * dirichlet_sparsity
 
-        if n_bcoeffs == 3:
-            alpha = bfunc_Kedge.log_alpha.exp()
-            total_loss += 1e-3 * (torch.log(alpha / 0.1)**2)
-            # total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
+        # if n_bcoeffs == 3:
+        #     alpha = bfunc_Kedge.log_alpha.exp()
+        #     total_loss += 1e-3 * (torch.log(alpha / 0.1)**2)
+        #     # total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
 
         # p   = gaussians.get_fracs.clamp_min(1e-8)       # (N, C) per-Gaussian fractions
         # rho = gaussians.get_rhos[:, 0].detach()         # (N,) use as spatial weight
@@ -323,13 +323,13 @@ def training(
         # if opt.lambda_tnv > 0.0:
         #     total_loss += opt.lambda_tnv * tnv_tv(bcoeff_image, reduction="mean")
 
-        p = gaussians.get_fracs
-        if p.shape[1] == 3:
-            rho = gaussians.get_rhos[:,0].detach()
-            rho_edge = torch.quantile(rho, 0.95)
-            gate = torch.sigmoid(12.0 * (rho - rho_edge))
-            total_loss += 1e-3 * ((1.0 - gate) * p[:,2]).mean()
-            # total_loss += 1e-5 * ((1.0 - gate) * p[:,2]).mean()
+        # p = gaussians.get_fracs
+        # if p.shape[1] == 3:
+        #     rho = gaussians.get_rhos[:,0].detach()
+        #     rho_edge = torch.quantile(rho, 0.95)
+        #     gate = torch.sigmoid(12.0 * (rho - rho_edge))
+        #     total_loss += 1e-3 * ((1.0 - gate) * p[:,2]).mean()
+        #     # total_loss += 1e-5 * ((1.0 - gate) * p[:,2]).mean()
 
         total_loss.backward()
        
@@ -342,9 +342,9 @@ def training(
             f = gaussians.get_fracs 
             f0 = f[:, 0]
             f1 = f[:, 1]
-            # print("mean f0, f1:", f0.mean().item(), f1.mean().item())
-            f2 = f[:, 2]
-            print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
+            print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            # f2 = f[:, 2]
+            # print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
             print("RHOS MEAN: ", gaussians.get_rhos.mean().item())
             print("NUM GAUSSIANS: ", len(gaussians.get_xyz))
             print("-------------------")
@@ -414,24 +414,26 @@ def training(
 
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_bcoeffs()
+                # min_frac = 0.02 if iteration < 4000 else 0.005
+                # gaussians.reset_bcoeffs(min_frac=min_frac)
 
             # if iteration == 2:
             #     gaussians.reset_bcoeffs2()
 
-            if (not kedge_frozen) and (bfunc_Kedge is not None) and (iteration >= opt.kedge_freeze_iter):
-                # stop learning the spectral shape
-                for p in bfunc_Kedge.parameters():
-                    p.requires_grad_(False)
+            # if (not kedge_frozen) and (bfunc_Kedge is not None) and (iteration >= opt.kedge_freeze_iter):
+            #     # stop learning the spectral shape
+            #     for p in bfunc_Kedge.parameters():
+            #         p.requires_grad_(False)
 
-                # make sure its optimizer won't touch it anymore
-                if basis_opt is not None:
-                    for g in basis_opt.param_groups:
-                        g["lr"] = 0.0
-                    # (optional) drop optimizer state for a tiny memory win
-                    basis_opt.state = {}
+            #     # make sure its optimizer won't touch it anymore
+            #     if basis_opt is not None:
+            #         for g in basis_opt.param_groups:
+            #             g["lr"] = 0.0
+            #         # (optional) drop optimizer state for a tiny memory win
+            #         basis_opt.state = {}
 
-                kedge_frozen = True
-                print(f"[k-edge] basis frozen at iter {iteration}")
+            #     kedge_frozen = True
+            #     print(f"[k-edge] basis frozen at iter {iteration}")
 
             # Optimizer step
             if iteration < opt.iterations:

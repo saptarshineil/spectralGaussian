@@ -510,10 +510,10 @@ class GaussianModel:
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
 
-        T = 4000.0
-        t = min(1.0, iteration / T)
-        self._frac_eps = float(0.20 * (1.0 - t)) 
-        # self._frac_eps = float(0.80 * (1.0 - t)) 
+        # T = 4000.0
+        # t = min(1.0, iteration / T)
+        # self._frac_eps = float(0.20 * (1.0 - t)) 
+        # # self._frac_eps = float(0.80 * (1.0 - t)) 
 
         # Spectral Gaussian
         # parameter_list = []
@@ -524,9 +524,9 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.1):
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.005):
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.0001):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.045):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.08):
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.01):
         with torch.no_grad():
             rho    = self.rhos_activation(self._rhos)
             rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))

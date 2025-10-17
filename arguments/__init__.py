@@ -127,8 +127,8 @@ class OptimizationParams(ParamGroup):
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
-        self.densify_from_iter = 500           # spectral + R2
-        # self.densify_from_iter = 2000           # spectral + R2
+        # self.densify_from_iter = 500           # spectral + R2
+        self.densify_from_iter = 2000           # spectral + R2
         # self.densify_from_iter = 60000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
         # self.densify_grad_threshold = 0.00015  # 2 basis
@@ -204,7 +204,8 @@ class OptimizationParams(ParamGroup):
         # self.basis2_lr_final = 0.00001
         self.basis2_lr_max_steps = 30000
 
-        self.kedge_freeze_iter = 2_000
+        # self.kedge_freeze_iter = 2_000
+        self.kedge_freeze_iter = 600000
         self.frac_warmup_iters = 600000
         # self.frac_warmup_iters = 1900
         # self.frac_warmup_iters = 3100
@@ -213,15 +214,15 @@ class OptimizationParams(ParamGroup):
 
         self.lambda_tv_basis_pe   = 2.5e-4
         self.lambda_tv_basis_comp = 2.5e-4
-        # self.lambda_tv_basis_K = 2.5e-4
-        self.lambda_tv_basis_K = 1e-3
+        self.lambda_tv_basis_K = 2.5e-4
+        # self.lambda_tv_basis_K = 25e-3
         
-        self.lambda_dirichlet = 1e-4
-        self.lambda_ortho     = 1e-3
+        # self.lambda_dirichlet = 1e-4
+        # self.lambda_ortho     = 1e-3
 
-        self.lambda_mix_entropy = 1e-3   
-        self.lambda_k_l1        = 5e-4   
-        self.lambda_tnv         = 0.0
+        # self.lambda_mix_entropy = 1e-3   
+        # self.lambda_k_l1        = 5e-4   
+        # self.lambda_tnv         = 0.0
         # self.lambda_tnv         = 1e-3
 
         super().__init__(parser, "Optimization Parameters")
