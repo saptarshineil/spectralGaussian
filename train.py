@@ -130,8 +130,8 @@ def training(
     
     # energy_opt = torch.optim.Adam([energy_logits], lr=1e-4)
 
-    FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
-    gaussians.freeze_rhos()
+    # FRAC_WARMUP_ITERS = getattr(opt, "frac_warmup_iters", 1000)
+    # gaussians.freeze_rhos()
 
     # --------------------------------------
     # Set up 3D TV loss
@@ -172,10 +172,10 @@ def training(
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        if (iteration - 1) == FRAC_WARMUP_ITERS:
-            gaussians.unfreeze_rhos()
-            gaussians.update_learning_rate(iteration)
-            print(f"[warmup] Unfroze ρ at iter {iteration}, lr now scheduled.")
+        # if (iteration - 1) == FRAC_WARMUP_ITERS:
+        #     gaussians.unfreeze_rhos()
+        #     gaussians.update_learning_rate(iteration)
+        #     print(f"[warmup] Unfroze ρ at iter {iteration}, lr now scheduled.")
         
         # Track losses
         losses_per_energy = []
@@ -285,9 +285,9 @@ def training(
         # dirichlet_sparsity = -torch.log(p).sum(dim=1).mean()   # α≈0.0 prior
         # total_loss += 1e-3 * dirichlet_sparsity
 
-        if n_bcoeffs == 3:
-            alpha = bfunc_Kedge.log_alpha.exp()
-            total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
+        # if n_bcoeffs == 3:
+        #     alpha = bfunc_Kedge.log_alpha.exp()
+        #     total_loss += 1e-5 * (torch.log(alpha / 0.1)**2)
 
         total_loss.backward()
        
@@ -300,9 +300,9 @@ def training(
             f = gaussians.get_fracs 
             f0 = f[:, 0]
             f1 = f[:, 1]
-            # print("mean f0, f1:", f0.mean().item(), f1.mean().item())
-            f2 = f[:, 2]
-            print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
+            print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            # f2 = f[:, 2]
+            # print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
             print("RHOS MEAN: ", gaussians.get_rhos.mean().item())
             print("NUM GAUSSIANS: ", len(gaussians.get_xyz))
             print("-------------------")

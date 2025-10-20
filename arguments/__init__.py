@@ -92,9 +92,9 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000
+        # self.iterations = 30_000
         # self.iterations = 10_000
-        # self.iterations = 5_000
+        self.iterations = 5_000
         # self.iterations = 10
         
         # -- Spectral --> Gaussian basics --
@@ -128,10 +128,8 @@ class OptimizationParams(ParamGroup):
         # self.densify_from_iter = 500           # spectral + R2
         self.densify_from_iter = 2000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
-        # self.densify_grad_threshold = 0.0001  # 2 basis
-        # self.densify_grad_threshold = 0.0002  # 3 basis
-        # self.densify_grad_threshold = 0.000075 # 3 basis
-        self.densify_grad_threshold = 0.00005 # 3 basis
+        self.densify_grad_threshold = 0.00025 # 3 basis
+        # self.densify_grad_threshold = 0.00005 # 3 basis
         
         self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
         self.density_min_threshold = 0.00001   # R2

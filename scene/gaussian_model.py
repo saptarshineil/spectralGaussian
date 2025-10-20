@@ -180,17 +180,17 @@ class GaussianModel:
         return rho
     
     @property
-    # def get_fracs(self):
-    #     raw = torch.cat(self._fracs, dim=1)
-    #     return torch.softmax(raw, dim=1)
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
-        # eps = getattr(self, "_frac_eps", 0.05)
-        # return stable_simplex(raw, eps=eps, s_ref_binary=1.0)
-        # eps = getattr(self, "_frac_eps", 0.80)
-        eps = getattr(self, "_frac_eps", 0.10)
-        return stable_simplex(raw, eps=eps)
-        # return stable_simplex(raw, tau=1.0, eps=0.02)
+        return torch.softmax(raw, dim=1)
+    # def get_fracs(self):
+    #     raw = torch.cat(self._fracs, dim=1)
+    #     # eps = getattr(self, "_frac_eps", 0.05)
+    #     # return stable_simplex(raw, eps=eps, s_ref_binary=1.0)
+    #     # eps = getattr(self, "_frac_eps", 0.80)
+    #     eps = getattr(self, "_frac_eps", 0.10)
+    #     return stable_simplex(raw, eps=eps)
+    #     # return stable_simplex(raw, tau=1.0, eps=0.02)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -512,10 +512,10 @@ class GaussianModel:
         for j in self.bcoeff_ids:
             self._update_learning_rate(iteration, f"fracs_{j}")
 
-        T = 4000.0
-        t = min(1.0, iteration / T)
-        self._frac_eps = float(0.20 * (1.0 - t)) 
-        # self._frac_eps = float(0.80 * (1.0 - t)) 
+        # T = 4000.0
+        # t = min(1.0, iteration / T)
+        # self._frac_eps = float(0.20 * (1.0 - t)) 
+        # # self._frac_eps = float(0.80 * (1.0 - t)) 
 
         # Spectral Gaussian
         # parameter_list = []
@@ -526,7 +526,28 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.05):
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.07):
+    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
+        with torch.no_grad():
+            rho    = self.rhos_activation(self._rhos)
+            rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
+            new_raw = self.rhos_inverse_activation(rho_cl)
+            name = f"rhos"
+            self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
+
+            raw_logits = torch.cat(self._fracs, dim=1)
+            probs      = torch.softmax(raw_logits, dim=1)
+            probs      = probs.clamp_min(min_frac)
+            probs      = probs / probs.sum(dim=1, keepdim=True)
+            new_logits = torch.log(probs)
+
+            for k in range(len(self._fracs)):
+                name   = f"fracs_{k}"
+                tensor = new_logits[:, k:k+1]
+                self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+            self.decay_optimizer_moments(decay=0.5)
+
     # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
     #     with torch.no_grad():
     #         rho    = self.rhos_activation(self._rhos)
@@ -536,10 +557,10 @@ class GaussianModel:
     #         self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
 
     #         raw_logits = torch.cat(self._fracs, dim=1)
-    #         probs      = torch.softmax(raw_logits, dim=1)
-    #         probs      = probs.clamp_min(min_frac)
-    #         probs      = probs / probs.sum(dim=1, keepdim=True)
-    #         new_logits = torch.log(probs)
+    #         p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.02, clip=20.0)
+    #         p = p.clamp_min(max(1e-6, min_frac))
+    #         p = p / p.sum(dim=1, keepdim=True)
+    #         new_logits = torch.log(p)  
 
     #         for k in range(len(self._fracs)):
     #             name   = f"fracs_{k}"
@@ -547,27 +568,6 @@ class GaussianModel:
     #             self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
 
     #         self.decay_optimizer_moments(decay=0.5)
-
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 1e-4):
-        with torch.no_grad():
-            rho    = self.rhos_activation(self._rhos)
-            rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
-            new_raw = self.rhos_inverse_activation(rho_cl)
-            name = f"rhos"
-            self._rhos = self.replace_tensor_to_optimizer(new_raw, name)[name]
-
-            raw_logits = torch.cat(self._fracs, dim=1)
-            p = stable_simplex(raw_logits, tau=getattr(self, "_frac_tau", 1.0), eps=0.02, clip=20.0)
-            p = p.clamp_min(max(1e-6, min_frac))
-            p = p / p.sum(dim=1, keepdim=True)
-            new_logits = torch.log(p)  
-
-            for k in range(len(self._fracs)):
-                name   = f"fracs_{k}"
-                tensor = new_logits[:, k:k+1]
-                self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
-
-            self.decay_optimizer_moments(decay=0.5)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -725,63 +725,63 @@ class GaussianModel:
         #     for k in self.bcoeff_ids:
         #         self.densification_postfix_per_coeff(self._fracs[k][sel], k)
 
-    # def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
-    #     n_init_points = self.get_xyz.shape[0]
-    #     # Extract points that satisfy the gradient condition
-    #     padded_grad = torch.zeros((n_init_points), device="cuda")
-    #     padded_grad[:grads.shape[0]] = grads.squeeze()
+    def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
+        n_init_points = self.get_xyz.shape[0]
+        # Extract points that satisfy the gradient condition
+        padded_grad = torch.zeros((n_init_points), device="cuda")
+        padded_grad[:grads.shape[0]] = grads.squeeze()
         
-    #     selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-    #     selected_pts_mask = torch.logical_and(
-    #         selected_pts_mask,
-    #         torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent
-    #     )
-    #     selected_pts_mask = torch.logical_and(
-    #         selected_pts_mask,
-    #         torch.max(self.get_scaling, dim=1).values > densify_scale_threshold,
-    #     )
+        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent
+        )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > densify_scale_threshold,
+        )
 
-    #     stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-    #     means =torch.zeros((stds.size(0), 3),device="cuda")
-    #     samples = torch.normal(mean=means, std=stds)
-    #     rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
+        stds = self.get_scaling[selected_pts_mask].repeat(N,1)
+        means =torch.zeros((stds.size(0), 3),device="cuda")
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         
-    #     new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-    #     new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
-    #     new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
-    #     new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
+        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
+        new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
         
-    #     # new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
-    #     # new_rhos = self.rhos_inverse_activation(
-    #     #     self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
-    #     # )
+        # new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
+        # new_rhos = self.rhos_inverse_activation(
+        #     self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
+        # )
 
-    #     with torch.no_grad():
-    #         rho_parent   = self.get_rhos[selected_pts_mask]                 # (k,1)
-    #         rho_child    = rho_parent.repeat(N,1)* (1 / N)    # (kN,1)
-    #         new_rhos = self.rhos_inverse_activation(rho_child)
-    #         # new_rhos  = self._rhos[selected_pts_mask].repeat(N, 1)
+        with torch.no_grad():
+            rho_parent   = self.get_rhos[selected_pts_mask]                 # (k,1)
+            rho_child    = rho_parent.repeat(N,1)* (1 / N)    # (kN,1)
+            new_rhos = self.rhos_inverse_activation(rho_child)
+            # new_rhos  = self._rhos[selected_pts_mask].repeat(N, 1)
 
-    #     self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
-    #     # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
+        self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
+        # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
         
-    #     # for bcoeff_id in self.bcoeff_ids:
-    #     #     new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
-    #     #     self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
+        # for bcoeff_id in self.bcoeff_ids:
+        #     new_opacity = self._bcoeffs[bcoeff_id][selected_pts_mask].repeat(N,1)
+        #     self.densification_postfix_per_coeff(new_opacity, bcoeff_id)
 
-    #     for bcoeff_id in self.bcoeff_ids:
-    #         # new_rhos = self._rhos[bcoeff_id][selected_pts_mask].repeat(N,1)
-    #         new_fracs = self._fracs[bcoeff_id][selected_pts_mask].repeat(N,1)
-    #         # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
-    #         self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
+        for bcoeff_id in self.bcoeff_ids:
+            # new_rhos = self._rhos[bcoeff_id][selected_pts_mask].repeat(N,1)
+            new_fracs = self._fracs[bcoeff_id][selected_pts_mask].repeat(N,1)
+            # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
+            self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
 
-    #     prune_filter = torch.cat(
-    #         (
-    #             selected_pts_mask,
-    #             torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool),
-    #         )
-    #     )
-    #     self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
+        prune_filter = torch.cat(
+            (
+                selected_pts_mask,
+                torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool),
+            )
+        )
+        self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
     
 
     # def densify_and_prune(
@@ -892,77 +892,77 @@ class GaussianModel:
     #     for j in self.bcoeff_ids:
     #         self.densification_postfix_per_coeff(self._fracs[j][selected], j)
 
-    def densify_and_split(
-        self,
-        grads,
-        grad_threshold,
-        scene_extent,
-        densify_scale_threshold,
-        only_active_spectra: bool,
-        N: int = 2,
-        offset_std_scale: float = 0.35,   # child offset in units of parent std
-        scale_shrink: float = 0.90,       # extra shrink (× N^{-1/3} overall)
-    ):
-        """
-        Split low-gradient, *large* Gaussians into N children.
+    # def densify_and_split(
+    #     self,
+    #     grads,
+    #     grad_threshold,
+    #     scene_extent,
+    #     densify_scale_threshold,
+    #     only_active_spectra: bool,
+    #     N: int = 2,
+    #     offset_std_scale: float = 0.35,   # child offset in units of parent std
+    #     scale_shrink: float = 0.90,       # extra shrink (× N^{-1/3} overall)
+    # ):
+    #     """
+    #     Split low-gradient, *large* Gaussians into N children.
 
-        Positions: x_child = x_parent + R · 𝒩(0, (offset_std_scale·diag(scale)) )
-        Scales:    s_child = s_parent · (scale_shrink / N^(1/3))   (≈ volume-preserving)
-        ρ:         equally divided across children (in activated space)
-        Fractions: copy logits exactly (no noise)
-        Parents:   removed after children are appended.
-        """
-        n0 = self.get_xyz.shape[0]
+    #     Positions: x_child = x_parent + R · 𝒩(0, (offset_std_scale·diag(scale)) )
+    #     Scales:    s_child = s_parent · (scale_shrink / N^(1/3))   (≈ volume-preserving)
+    #     ρ:         equally divided across children (in activated space)
+    #     Fractions: copy logits exactly (no noise)
+    #     Parents:   removed after children are appended.
+    #     """
+    #     n0 = self.get_xyz.shape[0]
 
-        # robust grad vector with padding for newly created points
-        g = grads.flatten() if grads.dim() > 1 else grads
-        if g.numel() < n0:
-            pad = torch.zeros((n0,), device="cuda", dtype=g.dtype)
-            pad[: g.numel()] = g
-            g = pad
+    #     # robust grad vector with padding for newly created points
+    #     g = grads.flatten() if grads.dim() > 1 else grads
+    #     if g.numel() < n0:
+    #         pad = torch.zeros((n0,), device="cuda", dtype=g.dtype)
+    #         pad[: g.numel()] = g
+    #         g = pad
 
-        s = self.get_scaling
-        smax = s.max(dim=1).values
-        large = (smax > self.percent_dense * scene_extent) & (smax > densify_scale_threshold)
-        selected = (g <= grad_threshold) & large
-        M = int(selected.sum())
-        if M == 0:
-            return
+    #     s = self.get_scaling
+    #     smax = s.max(dim=1).values
+    #     large = (smax > self.percent_dense * scene_extent) & (smax > densify_scale_threshold)
+    #     selected = (g <= grad_threshold) & large
+    #     M = int(selected.sum())
+    #     if M == 0:
+    #         return
 
-        # parents
-        x_parent = self._xyz[selected]         # raw
-        s_parent = s[selected]                 # activated
-        r_parent = self._rotation[selected]    # raw
-        R_parent = build_rotation(r_parent)    # (M,3,3)
-        rho_act  = self.get_rhos[selected]     # activated
+    #     # parents
+    #     x_parent = self._xyz[selected]         # raw
+    #     s_parent = s[selected]                 # activated
+    #     r_parent = self._rotation[selected]    # raw
+    #     R_parent = build_rotation(r_parent)    # (M,3,3)
+    #     rho_act  = self.get_rhos[selected]     # activated
 
-        # offsets in local coords → world
-        std_local = offset_std_scale * s_parent                     # (M,3)
-        eps = torch.randn((M * N, 3), device="cuda") * std_local.repeat(N, 1)
-        offs = torch.bmm(R_parent.repeat(N, 1, 1), eps.unsqueeze(-1)).squeeze(-1)
+    #     # offsets in local coords → world
+    #     std_local = offset_std_scale * s_parent                     # (M,3)
+    #     eps = torch.randn((M * N, 3), device="cuda") * std_local.repeat(N, 1)
+    #     offs = torch.bmm(R_parent.repeat(N, 1, 1), eps.unsqueeze(-1)).squeeze(-1)
 
-        new_xyz         = x_parent.repeat(N, 1) + offs
-        shrink          = scale_shrink / (N ** (1.0 / 3.0))
-        new_scaling     = self.scaling_inverse_activation(s_parent.repeat(N, 1) * shrink)
-        new_rotation    = r_parent.repeat(N, 1)
-        new_max_radii2D = self.max_radii2D[selected].repeat(N)
+    #     new_xyz         = x_parent.repeat(N, 1) + offs
+    #     shrink          = scale_shrink / (N ** (1.0 / 3.0))
+    #     new_scaling     = self.scaling_inverse_activation(s_parent.repeat(N, 1) * shrink)
+    #     new_rotation    = r_parent.repeat(N, 1)
+    #     new_max_radii2D = self.max_radii2D[selected].repeat(N)
 
-        # split the "mass" equally
-        child_rho_act = rho_act.repeat(N, 1) / float(N)
-        child_rho_raw = self.rhos_inverse_activation(child_rho_act)
+    #     # split the "mass" equally
+    #     child_rho_act = rho_act.repeat(N, 1) / float(N)
+    #     child_rho_raw = self.rhos_inverse_activation(child_rho_act)
 
-        self.densification_postfix(
-            new_xyz, new_scaling, new_rotation, new_max_radii2D, child_rho_raw
-        )
+    #     self.densification_postfix(
+    #         new_xyz, new_scaling, new_rotation, new_max_radii2D, child_rho_raw
+    #     )
 
-        # exact mixture copy (no noise to avoid biasing rare bases like metal)
-        for j in self.bcoeff_ids:
-            self.densification_postfix_per_coeff(self._fracs[j][selected].repeat(N, 1), j)
+    #     # exact mixture copy (no noise to avoid biasing rare bases like metal)
+    #     for j in self.bcoeff_ids:
+    #         self.densification_postfix_per_coeff(self._fracs[j][selected].repeat(N, 1), j)
 
-        # prune the parents we just split
-        prune_mask = torch.zeros(n0 + M * N, dtype=torch.bool, device="cuda")
-        prune_mask[:n0] = selected
-        self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
+    #     # prune the parents we just split
+    #     prune_mask = torch.zeros(n0 + M * N, dtype=torch.bool, device="cuda")
+    #     prune_mask[:n0] = selected
+    #     self.prune_points(prune_mask, only_active_spectra=only_active_spectra)
 
 
     def densification_postfix(self, new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos):
