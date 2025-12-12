@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import json
-import math
 from dataclasses import dataclass
 from typing import Dict, Tuple, Optional, Sequence
 from argparse import ArgumentParser
@@ -43,7 +42,8 @@ def extract_material_features(gaussians: GaussianModel,
         pe_coeff:    (N,)
         comp_coeff:  (N,)
         ratio:       (N,)  = pe/comp
-        feats2d:     (N,2) = [rho, ratio]
+        log_ratio:   (N,)  = log1p(pe/comp)
+        feats2d:     (N,2) = [rho, log1p(pe/comp)]
     Works on CUDA tensors but returns *numpy* arrays on CPU (for sklearn).
     """
     with torch.no_grad():
@@ -56,18 +56,21 @@ def extract_material_features(gaussians: GaussianModel,
         pe_ch = 0 if pe_is_channel0 else 1
         comp_ch = 1 - pe_ch
 
-        pe_coeff  = (rho[:, 0] * frac[:, pe_ch]).clamp_min(0.0)
-        comp_coeff= (rho[:, 0] * frac[:, comp_ch]).clamp_min(eps)
-        ratio     = (pe_coeff / (comp_coeff + eps)).clamp_max(1e6)
+        pe_coeff   = (rho[:, 0] * frac[:, pe_ch]).clamp_min(0.0)
+        comp_coeff = (rho[:, 0] * frac[:, comp_ch]).clamp_min(eps)
+        ratio      = (pe_coeff / (comp_coeff + eps)).clamp_max(1e6)
+        log_ratio  = torch.log1p(ratio)
 
-        feats2d = torch.stack([rho[:, 0], ratio], dim=1)
+        # **Changed**: use log-ratio to stabilize tails
+        feats2d = torch.stack([rho[:, 0], log_ratio], dim=1)
 
         out = dict(
-            rho      = rho[:, 0].detach().cpu().numpy(),
-            pe_coeff = pe_coeff.detach().cpu().numpy(),
+            rho        = rho[:, 0].detach().cpu().numpy(),
+            pe_coeff   = pe_coeff.detach().cpu().numpy(),
             comp_coeff = comp_coeff.detach().cpu().numpy(),
-            ratio    = ratio.detach().cpu().numpy(),
-            feats2d  = feats2d.detach().cpu().numpy(),
+            ratio      = ratio.detach().cpu().numpy(),
+            log_ratio  = log_ratio.detach().cpu().numpy(),
+            feats2d    = feats2d.detach().cpu().numpy(),
         )
         return out
 
@@ -92,10 +95,14 @@ def cluster_materials_mean_shift(X_2d: np.ndarray,
                                  bandwidth: Optional[float] = None,
                                  try_quantiles: Sequence[float] = (0.15, 0.2, 0.25)) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Mean-Shift in 2D (rho vs ratio). If bandwidth is None, estimate it;
-    we try a few quantiles and pick the one yielding 2–3 clusters, else fallback.
+    Mean-Shift in 2D (rho vs log1p(pe/comp)).
+    If bandwidth is None, estimate it across a few quantiles and pick the one
+    *preferring 2 clusters* (accept 3). This tends to merge tiny speckle modes.
     Returns (labels, centers).
     """
+    def score_k(K: int) -> int:
+        # Prefer K=2 (score 0); accept K=3 (score 1); otherwise penalize.
+        return 0 if K == 2 else (1 if K == 3 else 10 + abs(K - 2))
 
     if bandwidth is None:
         best = None
@@ -107,9 +114,7 @@ def cluster_materials_mean_shift(X_2d: np.ndarray,
                 ms = MeanShift(bandwidth=bw, bin_seeding=True, cluster_all=True)
                 ms.fit(X_2d)
                 K = len(ms.cluster_centers_)
-                # prefer 2, accept 3
-                score = 0 if K == 2 else (1 if K == 3 else 10 + abs(K-2))
-                cand = (score, K, ms)
+                cand = (score_k(K), K, ms)
                 if best is None or cand < best:
                     best = cand
             except Exception:
@@ -128,13 +133,13 @@ def label_clusters_bone_vs_tissue(X_2d: np.ndarray,
                                   labels: np.ndarray) -> Dict[int, str]:
     """
     Label each cluster id as "Bone (PE-dominated)" or "Soft Tissue (Compton-dominated)"
-    based on average ratio (column 1).
+    based on average (log) ratio in column 1.
     """
     uniq = np.unique(labels)
-    mean_ratio = {k: float(np.mean(X_2d[labels == k, 1])) for k in uniq}
+    mean_log_ratio = {k: float(np.mean(X_2d[labels == k, 1])) for k in uniq}
     if len(uniq) == 1:
         return {int(uniq[0]): "Soft Tissue (Compton-dominated)"}
-    bone_label = max(mean_ratio, key=mean_ratio.get)
+    bone_label = max(mean_log_ratio, key=mean_log_ratio.get)
     mapping = {}
     for k in uniq:
         mapping[int(k)] = "Bone (PE-dominated)" if k == bone_label else "Soft Tissue (Compton-dominated)"
@@ -188,16 +193,29 @@ def _normalize01(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 def compose_blend(bone_img: torch.Tensor,
                   tissue_img: torch.Tensor,
                   bone_rgb: Tuple[int, int, int],
-                  tissue_rgb: Tuple[int, int, int]) -> torch.Tensor:
+                  tissue_rgb: Tuple[int, int, int],
+                  mode: str = "independent") -> torch.Tensor:
     """
     Input: bone_img, tissue_img: (1,H,W) tensors (linear μ or path-integral units)
     Output: seg_rgb in [0,1], shape (3,H,W)
+
+    mode:
+      - "independent"  (default): min–max normalize each channel and sum colors
+      - "proportional": normalize then weight so per-pixel weights sum to 1
     """
     b = _normalize01(bone_img)
     t = _normalize01(tissue_img)
     br = torch.tensor(bone_rgb, dtype=torch.float32, device=b.device) / 255.0
     tr = torch.tensor(tissue_rgb, dtype=torch.float32, device=t.device) / 255.0
-    seg = b * br.view(3, 1, 1) + t * tr.view(3, 1, 1)
+
+    if mode == "proportional":
+        s = b + t + 1e-8
+        wb = b / s
+        wt = t / s
+        seg = wb * br.view(3, 1, 1) + wt * tr.view(3, 1, 1)
+    else:
+        seg = b * br.view(3, 1, 1) + t * tr.view(3, 1, 1)
+
     seg = seg.clamp(0.0, 1.0)
     return seg
 
@@ -228,6 +246,9 @@ def _render_cluster_mu(view, gaussians: GaussianModel, pipe: PipelineParams,
     Render μ image for a subset of Gaussians defined by boolean keep_mask (N,).
     We realize the subset by temporarily zeroing ρ for Gaussians not kept.
     Returns μ_E as (1,H,W) float32 on CUDA.
+
+    **Changed**: basis vector is normalized at a fixed pivot (E_ref=70 keV)
+    for more stable relative scaling across bases.
     """
     device = gaussians._rhos.device
     assert keep_mask.dtype == torch.bool and keep_mask.ndim == 1
@@ -242,16 +263,15 @@ def _render_cluster_mu(view, gaussians: GaussianModel, pipe: PipelineParams,
         gaussians._rhos[~keep_mask] = tiny_raw[~keep_mask]
 
         pkg = render_bcoeffs(view, gaussians, pipe)  # dict with "bcoeffs": (C,H,W)
-        bcoeff_img: torch.Tensor = pkg["bcoeffs"]  # accumulated basis coeffs
+        bcoeff_img: torch.Tensor = pkg["bcoeffs"]    # accumulated basis coeffs
         torch.cuda.synchronize()
 
-        # print(bcoeff_img.shape)
+        # Build basis at requested energy; use a fixed grid & normalize to a pivot
+        E = torch.tensor([energy_keV], device=device, dtype=torch.float32)
+        # no k-edge here; supply a simple grid just to define normalization
+        eg = torch.tensor([20.0, 140.0], device=device, dtype=torch.float32)
+        bfuncs = get_B_E_at_energy(eg, None, E, normalize=True, E_ref=70.0).squeeze(0)  # (2,)
 
-        # convert to μ(E) using analytic bases at requested energy
-        E_grid = torch.tensor([energy_keV], device=device, dtype=torch.float32)
-        energy_keV = torch.tensor([energy_keV], device=device, dtype=torch.float32)
-        bfuncs = get_B_E_at_energy(E_grid, None, energy_keV).squeeze(0)
-        # print(bfuncs.shape)
         mu = (bcoeff_img[0:2] * bfuncs[:, None, None]).sum(dim=0, keepdim=True)
         return mu
     finally:
@@ -273,7 +293,8 @@ def render_material_views(model_path: str,
                           pipe: PipelineParams,
                           cluster_result: MaterialClusteringResult,
                           energy_keV: float = 50.0,
-                          blend: bool = True):
+                          blend: bool = True,
+                          blend_mode: str = "independent"):
     """
     For each view:
       - render μ from Bone-only and Tissue-only sets,
@@ -308,7 +329,7 @@ def render_material_views(model_path: str,
         mu_bone = _render_cluster_mu(view, gaussians, pipe, bone_mask, energy_keV)
         mu_tiss = _render_cluster_mu(view, gaussians, pipe, tiss_mask, energy_keV)
 
-        seg = compose_blend(mu_bone, mu_tiss, bone_rgb, tiss_rgb) if blend \
+        seg = compose_blend(mu_bone, mu_tiss, bone_rgb, tiss_rgb, mode=blend_mode) if blend \
               else compose_hard(mu_bone, mu_tiss, bone_rgb, tiss_rgb)
 
         torchvision.utils.save_image(mu_bone, os.path.join(out_bone, f"{idx:05d}.png"))
@@ -349,7 +370,8 @@ def render_materials(dataset: ModelParams,
                      bandwidth: Optional[float] = None,
                      pe_is_channel0: bool = True,
                      energy_keV: float = 50.0,
-                     blend: bool = True) -> None:
+                     blend: bool = True,
+                     blend_mode: str = "independent") -> None:
     """
     End-to-end entry point: load scene & gaussians, cluster, save artifacts, render overlays.
     Artifacts:
@@ -383,8 +405,10 @@ def render_materials(dataset: ModelParams,
         "n_gaussians": int(gaussians.get_xyz.shape[0]),
         "assumptions": {
             "basis_order": "[PE, Compton]" if pe_is_channel0 else "[Compton, PE]",
+            "feature_space": "[rho, log1p(pe/comp)] (min–max scaled)",
             "energy_keV": float(energy_keV),
             "blend": bool(blend),
+            "blend_mode": str(blend_mode),
         }
     }
     with open(os.path.join(out_root, "cluster_info.json"), "w") as f:
@@ -394,11 +418,11 @@ def render_materials(dataset: ModelParams,
     if not skip_train:
         render_material_views(dataset.model_path, "train", scene.loaded_iter,
                               scene.getTrainCameras(), gaussians, pipeline, result,
-                              energy_keV=energy_keV, blend=blend)
+                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode)
     if (not skip_test) and len(scene.getTestCameras()) > 0:
         render_material_views(dataset.model_path, "test", scene.loaded_iter,
                               scene.getTestCameras(), gaussians, pipeline, result,
-                              energy_keV=energy_keV, blend=blend)
+                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode)
 
 
 # -------------------------- CLI convenience -------------------------- #
@@ -419,6 +443,8 @@ if __name__ == "__main__":
     parser.add_argument("--pe_is_channel0", action="store_true", default=True)
     parser.add_argument("--energy_keV", type=float, default=50.0)
     parser.add_argument("--hard", action="store_true", help="Use hard per-pixel labels instead of blending")
+    parser.add_argument("--blend_mode", type=str, choices=["independent", "proportional"], default="independent",
+                        help="Blend strategy for 2-class overlays")
 
     args = get_combined_args(parser)
     if not args.quiet:
@@ -438,4 +464,5 @@ if __name__ == "__main__":
         pe_is_channel0=args.pe_is_channel0,
         energy_keV=args.energy_keV,
         blend=not args.hard,
+        blend_mode=args.blend_mode,
     )

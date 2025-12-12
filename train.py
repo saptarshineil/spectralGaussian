@@ -342,9 +342,11 @@ def training(
             f = gaussians.get_fracs 
             f0 = f[:, 0]
             f1 = f[:, 1]
-            print("mean f0, f1:", f0.mean().item(), f1.mean().item())
-            # f2 = f[:, 2]
-            # print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
+            if n_bcoeffs == 2:
+                print("mean f0, f1:", f0.mean().item(), f1.mean().item())
+            else:
+                f2 = f[:, 2]
+                print("mean f0, f1, f2:", f0.mean().item(), f1.mean().item(), f2.mean().item())
             print("RHOS MEAN: ", gaussians.get_rhos.mean().item())
             print("NUM GAUSSIANS: ", len(gaussians.get_xyz))
             print("-------------------")

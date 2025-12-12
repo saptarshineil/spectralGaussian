@@ -122,24 +122,18 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.percent_dense = 0.01
         self.opacity_reset_interval = 3000
-        # self.opacity_reset_interval = 60000
         self.lambda_dssim = 0.25
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
-        # self.densify_from_iter = 500           # spectral + R2
         self.densify_from_iter = 2000           # spectral + R2
-        # self.densify_from_iter = 60000           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
-        # self.densify_grad_threshold = 0.00015  # 2 basis
-        # self.densify_grad_threshold = 0.0001  # 2 basis
-        self.densify_grad_threshold = 0.00025  # 3 basis
-        # self.densify_grad_threshold = 0.000075 # 3 basis
-        # self.densify_grad_threshold = 0.00005 # 3 basis
+        self.densify_grad_threshold = 0.00025 # slow
+        # self.densify_grad_threshold = 0.000075 # fast
+        # self.densify_grad_threshold = 0.0001 # fast
         
         self.densify_scale_threshold = 0.1     # R2 (percent of volume size)
         self.density_min_threshold = 0.00001   # R2
-        # self.density_min_threshold = 0.000001   # R2
 
         # -- Spectral --> segmentation --
         self.reg3d_interval = 2
@@ -170,38 +164,21 @@ class OptimizationParams(ParamGroup):
         self.max_num_gaussians = 500_000
         self.max_screen_size = None
 
-        # -- Test --
-        # self.pe_lr_init = 0.005  # PE initial learning rate (higher)
-        # self.pe_lr_final = 0.0005
-        # self.pe_lr_max_steps = 30000
-
-        # self.compton_lr_init = 0.001  # Compton initial learning rate (lower)
-        # self.compton_lr_final = 0.0001
-        # self.compton_lr_max_steps = 30000
-
         # Density
-        # self.opacity_lr_init = 0.00001
-        # self.opacity_lr_final = 0.000001
         self.opacity_lr_init = 0.0001
         self.opacity_lr_final = 0.00001
         self.opacity_lr_max_steps = 30_000
         # PE
-        # self.basis0_lr_init = 0.0001
-        # self.basis0_lr_final = 0.00001
         self.basis0_lr_init = 0.001
         self.basis0_lr_final = 0.0001
         self.basis0_lr_max_steps = 30000
         # Compton
-        # self.basis1_lr_init = 0.0001
-        # self.basis1_lr_final = 0.00001
         self.basis1_lr_init = 0.001
         self.basis1_lr_final = 0.0001
         self.basis1_lr_max_steps = 30000
         # K-edge
-        self.basis2_lr_init = 0.0025
-        self.basis2_lr_final = 0.00025
-        # self.basis2_lr_init = 0.0001
-        # self.basis2_lr_final = 0.00001
+        self.basis2_lr_init = 0.001
+        self.basis2_lr_final = 0.0001
         self.basis2_lr_max_steps = 30000
 
         # self.kedge_freeze_iter = 2_000
@@ -215,15 +192,6 @@ class OptimizationParams(ParamGroup):
         self.lambda_tv_basis_pe   = 2.5e-4
         self.lambda_tv_basis_comp = 2.5e-4
         self.lambda_tv_basis_K = 2.5e-4
-        # self.lambda_tv_basis_K = 25e-3
-        
-        # self.lambda_dirichlet = 1e-4
-        # self.lambda_ortho     = 1e-3
-
-        # self.lambda_mix_entropy = 1e-3   
-        # self.lambda_k_l1        = 5e-4   
-        # self.lambda_tnv         = 0.0
-        # self.lambda_tnv         = 1e-3
 
         super().__init__(parser, "Optimization Parameters")
 
