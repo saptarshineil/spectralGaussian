@@ -664,12 +664,12 @@ class GaussianModel:
         # )
         # self._rhos[selected_pts_mask] = new_rhos
 
-        with torch.no_grad():
-            rho_sel     = self.get_rhos[selected_pts_mask]                                # (k,1) positive
-            rho_half    = 0.5 * rho_sel
-            new_rhos = self.rhos_inverse_activation(rho_half)                 # raw for child
-            # also write back the parent's halved ρ (raw)
-            self._rhos[selected_pts_mask] = new_rhos
+        # FIX: Remove no_grad to maintain gradient flow
+        rho_sel = self.get_rhos[selected_pts_mask]  # (k,1) positive
+        rho_half = 0.5 * rho_sel
+        new_rhos = self.rhos_inverse_activation(rho_half)  # raw for child
+        # also write back the parent's halved ρ (raw)
+        self._rhos[selected_pts_mask] = new_rhos
 
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
@@ -685,6 +685,10 @@ class GaussianModel:
             new_fracs = self._fracs[bcoeff_id][selected_pts_mask]
             # self.densification_postfix_per_coeff(new_rhos, new_fracs, bcoeff_id)
             self.densification_postfix_per_coeff(new_fracs, bcoeff_id)
+        
+        # FIX: Decay optimizer momentum ONCE after all densification operations
+        # This prevents gradient vanishing by resetting momentum buildup
+        self.decay_optimizer_moments(decay=0.5)
 
     # 1
     def densify_and_split(self, grads, grad_threshold, scene_extent, densify_scale_threshold, only_active_spectra, N=2):
@@ -718,11 +722,17 @@ class GaussianModel:
         #     self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
         # )
 
-        with torch.no_grad():
-            rho_parent   = self.get_rhos[selected_pts_mask]                 # (k,1)
-            rho_child    = rho_parent.repeat(N,1)* (1 / N)    # (kN,1)
-            new_rhos = self.rhos_inverse_activation(rho_child)
-            # new_rhos  = self._rhos[selected_pts_mask].repeat(N, 1)
+        # FIX: Better initialization with noise to break symmetry and help gradient flow
+        rho_parent = self.get_rhos[selected_pts_mask]  # (k,1)
+        
+        # Add small noise to break symmetry and help gradient flow
+        noise = torch.randn_like(rho_parent.repeat(N, 1)) * 0.01
+        rho_child = rho_parent.repeat(N, 1) * (1.0 / N) + noise
+        
+        # Ensure values stay in valid range
+        rho_child = torch.clamp(rho_child, min=1e-6)
+        
+        new_rhos = self.rhos_inverse_activation(rho_child)
 
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
@@ -744,6 +754,10 @@ class GaussianModel:
             )
         )
         self.prune_points(prune_filter, only_active_spectra=only_active_spectra)
+        
+        # FIX: Decay optimizer momentum ONCE after all densification operations
+        # This prevents gradient vanishing by resetting momentum buildup
+        self.decay_optimizer_moments(decay=0.5)
     
     # 2
     # def densify_and_split(
@@ -842,8 +856,7 @@ class GaussianModel:
         self.denom              = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D        = torch.cat([self.max_radii2D, new_max_radii2D], dim=0)
 
-        # damp optimizer momentum so the new entries can adapt
-        self.decay_optimizer_moments(decay=0.5)
+        # NOTE: Momentum decay moved to end of densify_and_split to avoid multiple decays
 
     def densification_postfix_per_coeff(self, new_fracs, bcoeff_id):
         d = {}
@@ -851,6 +864,8 @@ class GaussianModel:
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d, bcoeff_id)
         self._fracs[bcoeff_id] = optimizable_tensors["fracs_"+ str(bcoeff_id)]
+        
+        # NOTE: Momentum decay moved to end of densify_and_split to avoid multiple decays
 
     def decay_optimizer_moments(self, decay: float = 0.5):
         for state in self.optimizer.state.values():          # one dict per param-tensor

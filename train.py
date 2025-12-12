@@ -93,7 +93,6 @@ def training(
     scene.init_gaussians(gaussians)
     gaussians.training_setup(opt)
 
-
     # ------------------------------------------
     E, E_grid, w_k, S, W, I0_scalar = get_spectral_constants()
 
@@ -113,11 +112,12 @@ def training(
 
         with torch.no_grad():
             # bfunc_Kedge.set_gamma(0.5)
-            bfunc_Kedge.set_gamma(1.5)
+            # bfunc_Kedge.set_gamma(1.5)
+            bfunc_Kedge.set_gamma(1.6)
             bfunc_Kedge.set_EK_init(50.0)
 
-        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.001)
-        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
+        # basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.001)
+        basis_opt = torch.optim.Adam(bfunc_Kedge.parameters(), lr=0.0001)
         kedge_frozen = False    
 
     energy_logits = torch.nn.Parameter(

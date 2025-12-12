@@ -126,7 +126,7 @@ class OptimizationParams(ParamGroup):
         
         # -- Spectral --> densification --
         self.densification_interval = 100      # spectral + R2 
-        self.densify_from_iter = 2000           # spectral + R2
+        self.densify_from_iter = 1990           # spectral + R2
         self.densify_until_iter = 15_000       # spectral + R2
         self.densify_grad_threshold = 0.00025 # slow
         # self.densify_grad_threshold = 0.000075 # fast
