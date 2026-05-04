@@ -76,6 +76,7 @@ class CameraInfoSpecCT(NamedTuple):
 class SceneInfoSpecCT(NamedTuple):
     point_cloud: BasicPointCloud
     scanner_cfg: dict               # CT
+    spectral_cfg: dict              # spectral CT
     vol: torch.tensor               # CT
     scene_scale: float              # CT
     spectral_ids: list              # spectral
@@ -442,6 +443,7 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
     with open(meta_data_path, "r") as handle:
         meta_data = json.load(handle)
     meta_data["ct"] = os.path.join(path, meta_data["ct"])
+    spectral_cfg = meta_data.get("spectral")
 
     if not "dVoxel" in meta_data["scanner"]:
         meta_data["scanner"]["dVoxel"] = list(
@@ -612,19 +614,10 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
         # rhos = np.repeat(rhos, 2, axis=1)
         print("RHOS: ", rhos.mean())
 
-        # # ratio = [0.33, 0.33, 0.33]
-        # # ratio = [0.10, 0.10, 0.80]
-        # ratio = [0.01, 0.01, 0.98]
-        # fractions = np.tile(ratio, (point_cloud.shape[0], 1)).astype(np.float32)
-        # fractions += np.random.normal(0, 0.01, size=fractions.shape)  # Increased noise stddev to 0.4
-        # fractions = np.clip(fractions, 1e-6, None)
-        # fractions = fractions / fractions.sum(axis=1, keepdims=True)
         if n_bcoeffs == 2:
-            # fractions = analytic_fraction_2(rhos[:,0])
             fractions, _, _ = pe_compton_from_density(rhos[:,0])
         else:
-            # fractions = analytic_fraction_3(rhos[:,0])
-            fractions, _, _ = pe_comp_kedge_from_density(rhos[:,0], xyz=xyz)
+            fractions, _, _ = pe_comp_kedge_from_density(rhos[:,0])
         print("FRACS: ", fractions[:,0].mean(), fractions[:,1].mean())
 
         ply_path = os.path.join(path, "init_pcd.ply")
@@ -635,6 +628,7 @@ def readBlenderCTInfo(path, images, eval, n_spectra, n_bcoeffs, spectra_path=Non
     scene_info = SceneInfoSpecCT(
         point_cloud=pcd,
         scanner_cfg=meta_data["scanner"],
+        spectral_cfg=spectral_cfg,
         vol=vol_gt,
         scene_scale=scene_scale,
         spectral_ids=spectral_ids,

@@ -1,12 +1,37 @@
 import torch
 import numpy as np
 
+# Numerical stability constants
+EPS = 1e-6
 
-def inverse_softplus(x, beta=1):
-    return torch.log(torch.exp(beta * x) - 1) / beta
+
+def inverse_softplus(x, beta=1, threshold=20.0):
+    """
+    Numerically stable inverse of softplus.
+    For large x, softplus(x) ≈ x, so inverse_softplus(x) ≈ x.
+    For small x, we use the exact formula with clamping.
+    """
+    # Clamp input to avoid numerical issues
+    x = x.clamp(min=EPS)
+    
+    # For large values, use linear approximation (softplus(y) ≈ y for large y)
+    # This avoids exp overflow
+    large_mask = (beta * x) > threshold
+    
+    # Standard formula: y = log(exp(beta*x) - 1) / beta
+    # Rewrite for stability: y = log(expm1(beta*x)) / beta
+    safe_x = torch.where(large_mask, torch.ones_like(x), x)
+    result = torch.log(torch.expm1(beta * safe_x).clamp(min=EPS)) / beta
+    
+    # For large x, inverse_softplus(x) ≈ x
+    result = torch.where(large_mask, x, result)
+    
+    return result
 
 
-def inverse_sigmoid(x):
+def inverse_sigmoid(x, eps=1e-6):
+    """Numerically stable inverse sigmoid with clamping."""
+    x = x.clamp(min=eps, max=1.0 - eps)
     return torch.log(x / (1 - x))
 
 
@@ -49,7 +74,7 @@ def get_expon_lr_func(
 def build_rotation(r):
     norm = torch.sqrt(
         r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1] + r[:, 2] * r[:, 2] + r[:, 3] * r[:, 3]
-    )
+    ).clamp(min=1e-8)  # Prevent division by zero
 
     q = r / norm[:, None]
 

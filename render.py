@@ -130,7 +130,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, classifi
         E_grid, w_k = energy_quadrature(20.0, 140.0, N_samples)
         bfunc_Kedge = None
 
-    E, _, _, S, W, I0_scalar = get_spectral_constants(E_grid, w_k)
+    E, _, _, S, W, I0_scalar = get_spectral_constants(E_grid, w_k, spectral_cfg=scene.spectral_cfg)
 
     # log_I0_bias = torch.tensor([0.0019, 0.0041, 0.0069], device='cuda')
     # log_tilt = torch.tensor([-0.2113, -0.1383,  0.0403], device='cuda')
@@ -193,6 +193,8 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         if not skip_train:
             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, classifier, n_spectra, n_bcoeffs, scene)
 
+        print(len(scene.getTestCameras()))
+
         if (not skip_test) and (len(scene.getTestCameras()) > 0):
             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, classifier, n_spectra, n_bcoeffs, scene)
 
@@ -222,4 +224,6 @@ if __name__ == "__main__":
         args.n_spectra,
         args.n_bcoeffs,
     )
+
+    
         # render_lightings

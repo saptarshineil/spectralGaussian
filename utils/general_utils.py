@@ -15,7 +15,9 @@ from datetime import datetime
 import numpy as np
 import random
 
-def inverse_sigmoid(x):
+def inverse_sigmoid(x, eps=1e-6):
+    """Numerically stable inverse sigmoid with clamping."""
+    x = x.clamp(min=eps, max=1.0 - eps)
     return torch.log(x/(1-x))
 
 def PILtoTorch(pil_image, resolution):

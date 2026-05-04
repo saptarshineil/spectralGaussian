@@ -32,6 +32,17 @@ class MaterialClusteringResult:
     label_to_color: Dict[int, Tuple[int, int, int]]  # RGB per label (0..255)
 
 
+VIRIDIS_PURPLE_RGB = (64, 71, 136)
+VIRIDIS_TISSUE_RGB = (35, 138, 141)
+VIRIDIS_BONE_RGB = (184, 222, 41)
+VIRIDIS_FALLBACK_RGBS = (
+    VIRIDIS_PURPLE_RGB,
+    (69, 55, 129),
+    (45, 112, 142),
+    (58, 183, 121),
+)
+
+
 # ----------------------- Step 1: feature extraction ------------------ #
 def extract_material_features(gaussians: GaussianModel,
                               pe_is_channel0: bool = True,
@@ -148,20 +159,20 @@ def label_clusters_bone_vs_tissue(X_2d: np.ndarray,
 
 def default_cluster_colors(label_to_name: Dict[int, str]) -> Dict[int, Tuple[int, int, int]]:
     """
-    Deterministic, high-contrast defaults:
-      Bone  -> blue  (0, 110, 255)
-      Tissue-> red   (230, 60, 60)
-      Others-> green variants
+    Deterministic viridis-inspired defaults:
+      Bone   -> yellow-green
+    Tissue -> brighter purple
+      Others -> darker viridis shades
     """
     colors = {}
     used_else = 0
     for k, name in label_to_name.items():
         if "Bone" in name:
-            colors[k] = (0, 110, 255)
+            colors[k] = VIRIDIS_BONE_RGB
         elif "Soft Tissue" in name:
-            colors[k] = (230, 60, 60)
+            colors[k] = VIRIDIS_TISSUE_RGB
         else:
-            colors[k] = (60, 180 - 40 * used_else, 80 + 60 * used_else)
+            colors[k] = VIRIDIS_FALLBACK_RGBS[min(used_else, len(VIRIDIS_FALLBACK_RGBS) - 1)]
             used_else += 1
     return colors
 
@@ -194,17 +205,31 @@ def compose_blend(bone_img: torch.Tensor,
                   tissue_img: torch.Tensor,
                   bone_rgb: Tuple[int, int, int],
                   tissue_rgb: Tuple[int, int, int],
-                  mode: str = "independent") -> torch.Tensor:
+                                    mode: str = "independent",
+                                    signal_threshold: float = 0.03,
+                                    bone_dominance: float = 1.10) -> torch.Tensor:
     """
     Input: bone_img, tissue_img: (1,H,W) tensors (linear μ or path-integral units)
     Output: seg_rgb in [0,1], shape (3,H,W)
 
     mode:
-      - "independent"  (default): min–max normalize each channel and sum colors
-      - "proportional": normalize then weight so per-pixel weights sum to 1
+      - "independent"  (default): normalize each channel, suppress weak signal,
+                          then sum colors
+      - "proportional": use the material ratio for hue but preserve total
+                          attenuation as brightness
     """
     b = _normalize01(bone_img)
     t = _normalize01(tissue_img)
+    total = _normalize01(bone_img + tissue_img)
+
+    foreground = (total > signal_threshold).to(b.dtype)
+    b = b * foreground
+    t = t * foreground
+
+    if bone_dominance > 0:
+        bone_confident = (b > (bone_dominance * t)).to(b.dtype)
+        b = b * bone_confident
+
     br = torch.tensor(bone_rgb, dtype=torch.float32, device=b.device) / 255.0
     tr = torch.tensor(tissue_rgb, dtype=torch.float32, device=t.device) / 255.0
 
@@ -212,7 +237,7 @@ def compose_blend(bone_img: torch.Tensor,
         s = b + t + 1e-8
         wb = b / s
         wt = t / s
-        seg = wb * br.view(3, 1, 1) + wt * tr.view(3, 1, 1)
+        seg = (wb * br.view(3, 1, 1) + wt * tr.view(3, 1, 1)) * total
     else:
         seg = b * br.view(3, 1, 1) + t * tr.view(3, 1, 1)
 
@@ -294,7 +319,9 @@ def render_material_views(model_path: str,
                           cluster_result: MaterialClusteringResult,
                           energy_keV: float = 50.0,
                           blend: bool = True,
-                          blend_mode: str = "independent"):
+                          blend_mode: str = "independent",
+                          signal_threshold: float = 0.03,
+                          bone_dominance: float = 1.10):
     """
     For each view:
       - render μ from Bone-only and Tissue-only sets,
@@ -329,7 +356,15 @@ def render_material_views(model_path: str,
         mu_bone = _render_cluster_mu(view, gaussians, pipe, bone_mask, energy_keV)
         mu_tiss = _render_cluster_mu(view, gaussians, pipe, tiss_mask, energy_keV)
 
-        seg = compose_blend(mu_bone, mu_tiss, bone_rgb, tiss_rgb, mode=blend_mode) if blend \
+        seg = compose_blend(
+            mu_bone,
+            mu_tiss,
+            bone_rgb,
+            tiss_rgb,
+            mode=blend_mode,
+            signal_threshold=signal_threshold,
+            bone_dominance=bone_dominance,
+        ) if blend \
               else compose_hard(mu_bone, mu_tiss, bone_rgb, tiss_rgb)
 
         torchvision.utils.save_image(mu_bone, os.path.join(out_bone, f"{idx:05d}.png"))
@@ -371,7 +406,9 @@ def render_materials(dataset: ModelParams,
                      pe_is_channel0: bool = True,
                      energy_keV: float = 50.0,
                      blend: bool = True,
-                     blend_mode: str = "independent") -> None:
+                     blend_mode: str = "independent",
+                     signal_threshold: float = 0.03,
+                     bone_dominance: float = 1.10) -> None:
     """
     End-to-end entry point: load scene & gaussians, cluster, save artifacts, render overlays.
     Artifacts:
@@ -409,6 +446,8 @@ def render_materials(dataset: ModelParams,
             "energy_keV": float(energy_keV),
             "blend": bool(blend),
             "blend_mode": str(blend_mode),
+            "signal_threshold": float(signal_threshold),
+            "bone_dominance": float(bone_dominance),
         }
     }
     with open(os.path.join(out_root, "cluster_info.json"), "w") as f:
@@ -418,11 +457,13 @@ def render_materials(dataset: ModelParams,
     if not skip_train:
         render_material_views(dataset.model_path, "train", scene.loaded_iter,
                               scene.getTrainCameras(), gaussians, pipeline, result,
-                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode)
+                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode,
+                              signal_threshold=signal_threshold, bone_dominance=bone_dominance)
     if (not skip_test) and len(scene.getTestCameras()) > 0:
         render_material_views(dataset.model_path, "test", scene.loaded_iter,
                               scene.getTestCameras(), gaussians, pipeline, result,
-                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode)
+                              energy_keV=energy_keV, blend=blend, blend_mode=blend_mode,
+                              signal_threshold=signal_threshold, bone_dominance=bone_dominance)
 
 
 # -------------------------- CLI convenience -------------------------- #
@@ -445,6 +486,10 @@ if __name__ == "__main__":
     parser.add_argument("--hard", action="store_true", help="Use hard per-pixel labels instead of blending")
     parser.add_argument("--blend_mode", type=str, choices=["independent", "proportional"], default="independent",
                         help="Blend strategy for 2-class overlays")
+    parser.add_argument("--signal_threshold", type=float, default=0.03,
+                        help="Suppress blended color where total normalized signal is below this threshold")
+    parser.add_argument("--bone_dominance", type=float, default=1.10,
+                        help="Require normalized bone signal to exceed tissue by this factor before showing bone color")
 
     args = get_combined_args(parser)
     if not args.quiet:
@@ -460,9 +505,12 @@ if __name__ == "__main__":
         skip_test=args.skip_test,
         n_spectra=args.n_spectra,
         n_bcoeffs=args.n_bcoeffs,
-        bandwidth=None,
+        bandwidth=args.bandwidth,
+        # bandwidth=None ,
         pe_is_channel0=args.pe_is_channel0,
         energy_keV=args.energy_keV,
         blend=not args.hard,
         blend_mode=args.blend_mode,
+        signal_threshold=args.signal_threshold,
+        bone_dominance=args.bone_dominance,
     )

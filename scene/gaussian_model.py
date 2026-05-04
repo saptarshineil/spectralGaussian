@@ -183,12 +183,17 @@ class GaussianModel:
     def get_fracs(self):
         raw = torch.cat(self._fracs, dim=1)
         return torch.softmax(raw, dim=1)
-
-    # @property
-    # def get_fracs(self):
-    #     raw = torch.cat(self._fracs, dim=1)
-    #     eps = getattr(self, "_frac_eps", 0.10)
-    #     return stable_simplex(raw, eps=eps)
+        
+        # if self.num_basis_coeffs == 3:
+        #     # Hierarchical sigmoid: K-edge is independent of PE/Compton
+        #     # fracs[2] is a sigmoid logit; fracs[0]/[1] are 2-way softmax logits
+        #     f_ke = torch.sigmoid(self._fracs[2])                         # (N,1)
+        #     raw_pc = torch.cat([self._fracs[0], self._fracs[1]], dim=1)  # (N,2)
+        #     f_pc = torch.softmax(raw_pc, dim=1) * (1.0 - f_ke)          # (N,2)
+        #     return torch.cat([f_pc, f_ke], dim=1)                        # (N,3), sums to 1
+        # else:
+        #     raw = torch.cat(self._fracs, dim=1)
+        #     return torch.softmax(raw, dim=1)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -264,7 +269,7 @@ class GaussianModel:
         # bcoeffs = []
         # for bcoeff_id in self.bcoeff_idsp()
                 # energy_opt.zero_gra:
-        #     bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())
+        #     bcoeffs.append(self._bcoeffs[bcoeff_id].detach().cpu().numpy())50
         # bcoeffs = np.concatenate(bcoeffs, axis=1)
         # rhos = []
         fracs = []
@@ -335,9 +340,32 @@ class GaussianModel:
         self._rhos = nn.Parameter(fused_rhos.requires_grad_(True))
        
         fracs = torch.tensor(pcd.fracs, dtype=torch.float32, device='cuda')  # shape (N, C)
+        
         fused_fracs = torch.log(fracs.clamp_min(1e-6))  # shape (N, C)
         for k in self.bcoeff_ids:
             self._fracs.append(nn.Parameter(fused_fracs[:, k:k+1].requires_grad_(True)))
+
+        # if self.num_basis_coeffs == 3:
+        #     # Hierarchical sigmoid encoding:
+        #     #   fracs[0]/[1] = log-prob logits for 2-way PE/Compton sub-softmax
+        #     #   fracs[2]     = sigmoid logit for K-edge (independent)
+        #     #                  NOT clamped: low-density Gaussians initialize at f_ke≈0,
+        #     #                  high-density Gaussians (top rho0_edge_q quantile) at f_ke>0.
+        #     #                  This gives spatial differentiation from the first iteration.
+        #     f_pe = fracs[:, 0].clamp_min(1e-6)
+        #     f_co = fracs[:, 1].clamp_min(1e-6)
+        #     f_ke = fracs[:, 2].clamp(1e-6, 1.0 - 1e-6)
+        #     f_sum_pc = (f_pe + f_co).clamp_min(1e-6)
+        #     logit_pe = torch.log(f_pe / f_sum_pc)               # (N,)
+        #     logit_co = torch.log(f_co / f_sum_pc)               # (N,)
+        #     ke_logit = torch.log(f_ke / (1.0 - f_ke))          # (N,), no forced floor — density drives K
+        #     self._fracs.append(nn.Parameter(logit_pe.unsqueeze(1).requires_grad_(True)))
+        #     self._fracs.append(nn.Parameter(logit_co.unsqueeze(1).requires_grad_(True)))
+        #     self._fracs.append(nn.Parameter(ke_logit.unsqueeze(1).requires_grad_(True)))
+        # else:
+        #     fused_fracs = torch.log(fracs.clamp_min(1e-6))  # shape (N, C)
+        #     for k in self.bcoeff_ids:
+        #         self._fracs.append(nn.Parameter(fused_fracs[:, k:k+1].requires_grad_(True)))
 
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
@@ -524,10 +552,7 @@ class GaussianModel:
 
 
     # ------------------ Reset Opacity ------------------
-    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.045): # 3 bcoeff slow
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.02): # 3 bcoeff fast - kedge lr = 0.001
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.001): # 3 bcoeff fast - kedge lr = 0.0001
-    # def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.08): # 2 bcoeff
+    def reset_bcoeffs(self, reset_rho = 1.0, min_frac = 0.04):
         with torch.no_grad():
             rho    = self.rhos_activation(self._rhos)
             rho_cl = torch.min(rho, torch.full_like(rho, reset_rho))
@@ -540,11 +565,44 @@ class GaussianModel:
             probs      = probs.clamp_min(min_frac)
             probs      = probs / probs.sum(dim=1, keepdim=True)
             new_logits = torch.log(probs)
-
             for k in range(len(self._fracs)):
                 name   = f"fracs_{k}"
                 tensor = new_logits[:, k:k+1]
                 self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
+
+            # if self.num_basis_coeffs == 3:
+            #     # Hierarchical sigmoid parametrisation: fracs[2] is a sigmoid logit
+            #     # for K-edge, completely independent of the PE/Compton sub-softmax.
+            #     # Only reset fracs[0] and fracs[1] via the sub-softmax; leave fracs[2]
+            #     # untouched so the reset cannot corrupt the K-edge logit.
+            #     if isinstance(min_frac, (list, tuple)):
+            #         mf_pc = torch.tensor(list(min_frac[:2]), device=self._fracs[0].device)
+            #     else:
+            #         mf_pc = torch.full((2,), min_frac, device=self._fracs[0].device)
+            #     raw_pc = torch.cat([self._fracs[0], self._fracs[1]], dim=1)
+            #     probs_pc = torch.softmax(raw_pc, dim=1)
+            #     probs_pc = torch.max(probs_pc, mf_pc.unsqueeze(0))
+            #     probs_pc = probs_pc / probs_pc.sum(dim=1, keepdim=True)
+            #     new_logits_pc = torch.log(probs_pc)
+            #     for k in range(2):
+            #         name = f"fracs_{k}"
+            #         self._fracs[k] = self.replace_tensor_to_optimizer(new_logits_pc[:, k:k+1], name)[name]
+            #     # fracs[2] (K-edge sigmoid logit) intentionally not reset
+            # else:
+            #     C = len(self._fracs)
+            #     if isinstance(min_frac, (list, tuple)):
+            #         mf = torch.tensor(list(min_frac), device=self._fracs[0].device)
+            #     else:
+            #         mf = torch.full((C,), min_frac, device=self._fracs[0].device)
+            #     raw_logits = torch.cat(self._fracs, dim=1)
+            #     probs      = torch.softmax(raw_logits, dim=1)
+            #     probs      = torch.max(probs, mf.unsqueeze(0))
+            #     probs      = probs / probs.sum(dim=1, keepdim=True)
+            #     new_logits = torch.log(probs)
+            #     for k in range(C):
+            #         name   = f"fracs_{k}"
+            #         tensor = new_logits[:, k:k+1]
+            #         self._fracs[k] = self.replace_tensor_to_optimizer(tensor, name)[name]
 
             self.decay_optimizer_moments(decay=0.5)
 
@@ -577,6 +635,7 @@ class GaussianModel:
 
     def densify_and_prune(self, 
         max_grad, 
+        max_grad_split,
         min_opacity, 
         extent, 
         max_screen_size,
@@ -596,7 +655,7 @@ class GaussianModel:
                 max_num_gaussians and grads.shape[0] < max_num_gaussians
             ):
                 self.densify_and_clone(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
-                self.densify_and_split(grads, max_grad, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
+                self.densify_and_split(grads, max_grad_split, extent, opacity_scale_threshold, only_active_spectra=only_active_spectra)
 
         # -- R2-Gaussian --
         # Prune gaussians with too small density
@@ -659,17 +718,17 @@ class GaussianModel:
         new_max_radii2D = self.max_radii2D[selected_pts_mask]
         # new_rhos = self._rhos[selected_pts_mask]
 
-        # new_rhos = self.rhos_inverse_activation(
-        #     self.get_rhos[selected_pts_mask] * 0.5
-        # )
-        # self._rhos[selected_pts_mask] = new_rhos
-
-        # FIX: Remove no_grad to maintain gradient flow
-        rho_sel = self.get_rhos[selected_pts_mask]  # (k,1) positive
-        rho_half = 0.5 * rho_sel
-        new_rhos = self.rhos_inverse_activation(rho_half)  # raw for child
-        # also write back the parent's halved ρ (raw)
+        new_rhos = self.rhos_inverse_activation(
+            self.get_rhos[selected_pts_mask] * 0.5
+        )
         self._rhos[selected_pts_mask] = new_rhos
+
+        # # FIX: Remove no_grad to maintain gradient flow
+        # rho_sel = self.get_rhos[selected_pts_mask]  # (k,1) positive
+        # rho_half = 0.5 * rho_sel
+        # new_rhos = self.rhos_inverse_activation(rho_half)  # raw for child
+        # # also write back the parent's halved ρ (raw)
+        # self._rhos[selected_pts_mask] = new_rhos
 
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)
@@ -717,22 +776,21 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_max_radii2D = self.max_radii2D[selected_pts_mask].repeat(N)
         
-        # new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
-        # new_rhos = self.rhos_inverse_activation(
-        #     self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
-        # )
+        new_rhos = self._rhos[selected_pts_mask].repeat(N,1)
+        new_rhos = self.rhos_inverse_activation(
+            self.get_rhos[selected_pts_mask].repeat(N, 1) * (1 / N)
+        )
 
-        # FIX: Better initialization with noise to break symmetry and help gradient flow
-        rho_parent = self.get_rhos[selected_pts_mask]  # (k,1)
+        # # FIX: Better initialization with noise to break symmetry and help gradient flow
+        # rho_parent = self.get_rhos[selected_pts_mask]  # (k,1)
         
-        # Add small noise to break symmetry and help gradient flow
-        noise = torch.randn_like(rho_parent.repeat(N, 1)) * 0.01
-        rho_child = rho_parent.repeat(N, 1) * (1.0 / N) + noise
+        # # Add small noise to break symmetry and help gradient flow
+        # noise = torch.randn_like(rho_parent.repeat(N, 1)) * 0.01
+        # rho_child = rho_parent.repeat(N, 1) * (1.0 / N) + noise
+        # # rho_child = rho_parent.repeat(N, 1) * (1.0 / N)
         
-        # Ensure values stay in valid range
-        rho_child = torch.clamp(rho_child, min=1e-6)
-        
-        new_rhos = self.rhos_inverse_activation(rho_child)
+        # rho_child = torch.clamp(rho_child, min=1e-6)
+        # new_rhos = self.rhos_inverse_activation(rho_child)
 
         self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D, new_rhos)
         # self.densification_postfix(new_xyz, new_scaling, new_rotation, new_max_radii2D)

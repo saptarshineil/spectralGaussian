@@ -89,6 +89,7 @@ class Scene:
         # Set up CT parameters
         self.vol_gt = scene_info.vol
         self.scanner_cfg = scene_info.scanner_cfg
+        self.spectral_cfg = getattr(scene_info, "spectral_cfg", None)
         self.scene_scale = scene_info.scene_scale
         self.bbox = torch.stack(
             [

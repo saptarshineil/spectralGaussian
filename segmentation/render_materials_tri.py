@@ -32,6 +32,12 @@ class MaterialClusteringResult:
     label_to_name: Dict[int, str]
     label_to_color: Dict[int, Tuple[int, int, int]]
 
+
+VIRIDIS_METAL_RGB = (68, 1, 84)
+VIRIDIS_TISSUE_RGB = (35, 138, 141)
+VIRIDIS_BONE_RGB = (184, 222, 41)
+VIRIDIS_FALLBACK_RGB = (72, 40, 120)
+
 # ------------------------ Small utils ------------------------ #
 def _ensure_dir(p: str) -> str:
     os.makedirs(p, exist_ok=True)
@@ -211,17 +217,17 @@ def label_clusters_metal_bone_tissue(X: np.ndarray, labels: np.ndarray, *, kfrac
 def default_cluster_colors(label_to_name: Dict[int, str]) -> Dict[int, Tuple[int,int,int]]:
     colors: Dict[int, Tuple[int,int,int]] = {}
     for k, name in label_to_name.items():
-        # Treat "Bone/Metal" as Bone (blue) to keep K=2 visuals consistent.
+        # Treat "Bone/Metal" as Bone to keep K=2 visuals consistent.
         if name.startswith("Bone/Metal"):
-            colors[k] = (0, 110, 255)      # blue
+            colors[k] = VIRIDIS_BONE_RGB
         elif "Metal" in name:
-            colors[k] = (255, 215, 0)      # yellow
+            colors[k] = VIRIDIS_METAL_RGB
         elif "Bone" in name:
-            colors[k] = (0, 110, 255)      # blue
+            colors[k] = VIRIDIS_BONE_RGB
         elif "Soft Tissue" in name:
-            colors[k] = (230, 60, 60)      # red
+            colors[k] = VIRIDIS_TISSUE_RGB
         else:
-            colors[k] = (60, 180, 80)      # fallback green
+            colors[k] = VIRIDIS_FALLBACK_RGB
     return colors
 
 def compute_internal_metrics(X: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
@@ -247,23 +253,35 @@ def _normalize01(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 def compose_blend_multi(
     imgs: Sequence[torch.Tensor],
     rgbs: Sequence[Tuple[int,int,int]],
-    mode: str = "independent"   # "independent" (match 2-class code) or "proportional"
+    mode: str = "independent",   # "independent" (match 2-class code) or "proportional"
+    signal_threshold: float = 0.05,
+    bone_dominance: float = 0.40,
+    bone_index: Optional[int] = None,
+    tissue_index: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Blend K images into RGB using either:
-      - independent: min–max normalize each μ_k to [0,1], then sum μ_k * color_k
-      - proportional: min–max normalize, then normalise weights per pixel to sum=1
+      - independent: min–max normalize each μ_k, suppress weak signal, then sum μ_k * color_k
+      - proportional: use material ratios for hue but preserve total attenuation as brightness
     Returns (3,H,W) in [0,1].
     """
     assert len(imgs) == len(rgbs) and len(imgs) >= 1
     dev = imgs[0].device
     cols = [torch.tensor(c, dtype=torch.float32, device=dev).view(3,1,1)/255.0 for c in rgbs]
     norms = [_normalize01(t) for t in imgs]  # (1,H,W) each
+    total = _normalize01(sum(imgs))
+
+    foreground = (total > signal_threshold).to(norms[0].dtype)
+    norms = [n * foreground for n in norms]
+
+    if (bone_dominance > 0) and (bone_index is not None) and (tissue_index is not None):
+        bone_confident = (norms[bone_index] > (bone_dominance * norms[tissue_index])).to(norms[bone_index].dtype)
+        norms[bone_index] = norms[bone_index] * bone_confident
 
     if mode == "proportional":
         S = torch.stack(norms, dim=0)                 # (K,1,H,W)
         w = S / (S.sum(dim=0, keepdim=True) + 1e-8)   # (K,1,H,W) weights sum to 1
-        seg = sum(w[k] * cols[k] for k in range(len(cols)))
+        seg = sum(w[k] * cols[k] for k in range(len(cols))) * total
     else:
         seg = sum(norms[k] * cols[k] for k in range(len(cols)))
         seg = seg.clamp(0.0, 1.0)
@@ -381,6 +399,8 @@ def render_material_views(
     blend_mode: str = "independent",   # or "proportional"
     basis_overlay: bool = False,
     pe_is_channel0: bool = True,
+    signal_threshold: float = 0.05,
+    bone_dominance: float = 0.40,
 ):
     """
     For each view:
@@ -397,10 +417,10 @@ def render_material_views(
     dev = gaussians._rhos.device
 
     if basis_overlay:
-        # Fixed palette for the bases: K (yellow), PE (blue), Compton (red)
-        metal_rgb = (255, 215, 0)
-        bone_rgb  = (0, 110, 255)
-        tiss_rgb  = (230, 60, 60)
+        # Fixed palette for the bases: K-edge (purple), PE (yellow-green), Compton (teal)
+        metal_rgb = VIRIDIS_METAL_RGB
+        bone_rgb  = VIRIDIS_BONE_RGB
+        tiss_rgb  = VIRIDIS_TISSUE_RGB
 
         for idx, view in enumerate(views):
             pkg0 = render_bcoeffs(view, gaussians, pipe)
@@ -443,7 +463,11 @@ def render_material_views(
             if blend:
                 seg = compose_blend_multi([mu_metal, mu_bone, mu_tiss],
                                           [metal_rgb, bone_rgb, tiss_rgb],
-                                          mode=blend_mode)
+                                          mode=blend_mode,
+                                          signal_threshold=signal_threshold,
+                                          bone_dominance=bone_dominance,
+                                          bone_index=1,
+                                          tissue_index=2)
             else:
                 seg = compose_hard_multi([mu_metal, mu_bone, mu_tiss],
                                          [metal_rgb, bone_rgb, tiss_rgb])
@@ -467,12 +491,12 @@ def render_material_views(
         bone_labels = [k for k, v in cluster_result.label_to_name.items()
                        if v.startswith("Bone/Metal")]
 
-    bone_rgb  = (cluster_result.label_to_color.get(bone_labels[0],  (0,110,255))
-                 if bone_labels else (0,110,255))
-    tiss_rgb  = (cluster_result.label_to_color.get(tissue_labels[0],(230,60,60))
-                 if tissue_labels else (230,60,60))
-    metal_rgb = (cluster_result.label_to_color.get(metal_labels[0], (255,215,0))
-                 if metal_labels else (255,215,0))
+    bone_rgb  = (cluster_result.label_to_color.get(bone_labels[0], VIRIDIS_BONE_RGB)
+                 if bone_labels else VIRIDIS_BONE_RGB)
+    tiss_rgb  = (cluster_result.label_to_color.get(tissue_labels[0], VIRIDIS_TISSUE_RGB)
+                 if tissue_labels else VIRIDIS_TISSUE_RGB)
+    metal_rgb = (cluster_result.label_to_color.get(metal_labels[0], VIRIDIS_METAL_RGB)
+                 if metal_labels else VIRIDIS_METAL_RGB)
 
     bone_mask  = torch.from_numpy(np.isin(cluster_result.labels, bone_labels)).to(dev)
     tiss_mask  = torch.from_numpy(np.isin(cluster_result.labels, tissue_labels)).to(dev)
@@ -490,7 +514,11 @@ def render_material_views(
         if blend:
             seg = compose_blend_multi([mu_metal, mu_bone, mu_tiss],
                                       [metal_rgb, bone_rgb, tiss_rgb],
-                                      mode=blend_mode)
+                                      mode=blend_mode,
+                                      signal_threshold=signal_threshold,
+                                      bone_dominance=bone_dominance,
+                                      bone_index=1,
+                                      tissue_index=2)
         else:
             seg = compose_hard_multi([mu_metal, mu_bone, mu_tiss],
                                      [metal_rgb, bone_rgb, tiss_rgb])
@@ -518,6 +546,8 @@ def render_materials(
     blend: bool,
     blend_mode: str,
     basis_overlay: bool,
+    signal_threshold: float,
+    bone_dominance: float,
 ) -> None:
     scene = Scene(dataset, n_spectra, n_bcoeffs, load_iteration=iteration, shuffle=False)
 
@@ -556,6 +586,8 @@ def render_materials(
             "blend": bool(blend),
             "blend_mode": str(blend_mode),
             "basis_overlay": bool(basis_overlay),
+            "signal_threshold": float(signal_threshold),
+            "bone_dominance": float(bone_dominance),
         }
     }
     with open(os.path.join(out_root, "cluster_info.json"), "w") as f:
@@ -567,13 +599,15 @@ def render_materials(
                               scene.getTrainCameras(), gaussians, pipeline, result,
                               energy_keV=energy_keV, bfunc_Kedge=bfunc_Kedge, E_grid=E_grid,
                               blend=blend, blend_mode=blend_mode,
-                              basis_overlay=basis_overlay, pe_is_channel0=pe_is_channel0)
+                              basis_overlay=basis_overlay, pe_is_channel0=pe_is_channel0,
+                              signal_threshold=signal_threshold, bone_dominance=bone_dominance)
     if (not skip_test) and len(scene.getTestCameras()) > 0:
         render_material_views(dataset.model_path, "test", scene.loaded_iter,
                               scene.getTestCameras(), gaussians, pipeline, result,
                               energy_keV=energy_keV, bfunc_Kedge=bfunc_Kedge, E_grid=E_grid,
                               blend=blend, blend_mode=blend_mode,
-                              basis_overlay=basis_overlay, pe_is_channel0=pe_is_channel0)
+                              basis_overlay=basis_overlay, pe_is_channel0=pe_is_channel0,
+                              signal_threshold=signal_threshold, bone_dominance=bone_dominance)
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Material rendering (Metal/Bone/Soft) for 3DGS")
@@ -597,6 +631,10 @@ if __name__ == "__main__":
     parser.add_argument("--blend_mode", type=str, choices=["independent", "proportional"], default="independent",
                         help="Blend strategy for multi-class overlays")
     parser.add_argument("--basis_overlay", action="store_true", help="Color directly by basis μ_k(E) instead of clustering")
+    parser.add_argument("--signal_threshold", type=float, default=0.05,
+                        help="Suppress blended color where total normalized signal is below this threshold")
+    parser.add_argument("--bone_dominance", type=float, default=0.40,
+                        help="Require normalized bone signal to exceed tissue by this factor before showing bone color")
 
     args = get_combined_args(parser)
     if not args.quiet:
@@ -612,13 +650,15 @@ if __name__ == "__main__":
         skip_test=args.skip_test,
         n_spectra=args.n_spectra,
         n_bcoeffs=args.n_bcoeffs,
-        bandwidth=None,           # use CLI
+        bandwidth=args.bandwidth,
         pe_is_channel0=args.pe_is_channel0,
         prefer_k3=args.prefer_k3,
         energy_keV=args.energy_keV,
         blend=not args.hard,
         blend_mode=args.blend_mode,
         basis_overlay=args.basis_overlay,
+        signal_threshold=args.signal_threshold,
+        bone_dominance=args.bone_dominance,
     )
 
 
